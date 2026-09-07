@@ -27,6 +27,7 @@
 #include <charconv>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace umbriel {
@@ -59,17 +60,6 @@ namespace umbriel {
       }
       wlr_surface* root = wlr_surface_get_root_surface(surface);
       return viewForToplevel(server, wlr_xdg_toplevel_try_from_wlr_surface(root));
-    }
-
-    pid_t surfaceClientPid(wlr_surface* surface) {
-      if (surface == nullptr || surface->resource == nullptr) {
-        return -1;
-      }
-      pid_t pid = -1;
-      uid_t uid = 0;
-      gid_t gid = 0;
-      wl_client_get_credentials(wl_resource_get_client(surface->resource), &pid, &uid, &gid);
-      return pid;
     }
 
     const char* deviceName(const wlr_input_device* device) {
@@ -169,6 +159,105 @@ namespace umbriel {
       if (libinput_device_config_scroll_set_natural_scroll_enabled(libinputDevice, enabled)
           != LIBINPUT_CONFIG_STATUS_SUCCESS) {
         kLog.warn("input: failed to apply {} to '{}'", setting, deviceName(device));
+      }
+    }
+
+    void applyClickMethod(
+        libinput_device* libinputDevice, const wlr_input_device* device, std::optional<ClickMethod> configured,
+        std::string_view setting
+    ) {
+      const uint32_t methods = libinput_device_config_click_get_methods(libinputDevice);
+      if (methods == 0) {
+        if (configured) {
+          kLog.warn("input: '{}' does not support {}", deviceName(device), setting);
+        }
+        return;
+      }
+      enum libinput_config_click_method method = libinput_device_config_click_get_default_method(libinputDevice);
+      if (configured) {
+        enum libinput_config_click_method requested = LIBINPUT_CONFIG_CLICK_METHOD_BUTTON_AREAS;
+        const char* requestedName = "button_areas";
+        switch (*configured) {
+        case ClickMethod::ButtonAreas:
+          break;
+        case ClickMethod::ClickFinger:
+          requested = LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
+          requestedName = "clickfinger";
+          break;
+        }
+        if ((methods & requested) == 0) {
+          kLog.warn("input: '{}' does not support the {} click method", deviceName(device), requestedName);
+          return;
+        }
+        method = requested;
+      }
+      if (libinput_device_config_click_set_method(libinputDevice, method) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+        if (configured) {
+          kLog.warn("input: failed to apply {} to '{}'", setting, deviceName(device));
+        } else {
+          kLog.warn("input: failed to restore the default click method for '{}'", deviceName(device));
+        }
+      }
+    }
+
+    // libinput's on-button-down scrolling: while the configured button is held (or latched, with the lock), motion
+    // turns into scroll events and the button itself stops clicking.
+    void applyScrollButton(
+        libinput_device* libinputDevice, const wlr_input_device* device, std::optional<uint32_t> configuredButton,
+        std::optional<bool> configuredLock, std::string_view buttonSetting, std::string_view lockSetting
+    ) {
+      const bool supported =
+          (libinput_device_config_scroll_get_methods(libinputDevice) & LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN) != 0;
+      if (!supported) {
+        if (configuredButton) {
+          kLog.warn("input: '{}' does not support {}", deviceName(device), buttonSetting);
+        } else if (configuredLock) {
+          kLog.warn("input: '{}' does not support {}", deviceName(device), lockSetting);
+        }
+        return;
+      }
+
+      if (!configuredButton) {
+        if (configuredLock) {
+          kLog.warn("input: '{}' ignores {} because {} is not set", deviceName(device), lockSetting, buttonSetting);
+        }
+        // The device may still carry a button-down method from an earlier config, so every default has to go back.
+        if (libinput_device_config_scroll_set_method(
+                libinputDevice, libinput_device_config_scroll_get_default_method(libinputDevice)
+            ) != LIBINPUT_CONFIG_STATUS_SUCCESS
+            || libinput_device_config_scroll_set_button(
+                   libinputDevice, libinput_device_config_scroll_get_default_button(libinputDevice)
+               ) != LIBINPUT_CONFIG_STATUS_SUCCESS
+            || libinput_device_config_scroll_set_button_lock(
+                   libinputDevice, libinput_device_config_scroll_get_default_button_lock(libinputDevice)
+               ) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+          kLog.warn("input: failed to restore the default scroll button state for '{}'", deviceName(device));
+        }
+        return;
+      }
+
+      if (libinput_device_config_scroll_set_button(libinputDevice, *configuredButton)
+          != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+        const char* name = mouseButtonName(*configuredButton);
+        kLog.warn(
+            "input: could not apply {} to '{}': the device has no {} button", buttonSetting, deviceName(device),
+            name != nullptr ? name : "such"
+        );
+        return;
+      }
+      if (libinput_device_config_scroll_set_method(libinputDevice, LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN)
+          != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+        kLog.warn("input: failed to apply {} to '{}'", buttonSetting, deviceName(device));
+        return;
+      }
+      const auto lockState = configuredLock.value_or(
+                                 libinput_device_config_scroll_get_default_button_lock(libinputDevice)
+                                 == LIBINPUT_CONFIG_SCROLL_BUTTON_LOCK_ENABLED
+                             )
+          ? LIBINPUT_CONFIG_SCROLL_BUTTON_LOCK_ENABLED
+          : LIBINPUT_CONFIG_SCROLL_BUTTON_LOCK_DISABLED;
+      if (libinput_device_config_scroll_set_button_lock(libinputDevice, lockState) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+        kLog.warn("input: failed to apply {} to '{}'", lockSetting, deviceName(device));
       }
     }
 
@@ -315,6 +404,15 @@ namespace umbriel {
         }
       }
 
+      const bool hasClickOverride = override != nullptr && override->clickMethod.has_value();
+      const std::optional<ClickMethod> clickMethod = hasClickOverride ? override->clickMethod
+          : isTouchpad                                                ? input.touchpad.clickMethod
+                                                                      : std::nullopt;
+      applyClickMethod(
+          libinputDevice, device, clickMethod,
+          hasClickOverride ? "input.device.click_method" : "input.touchpad.click_method"
+      );
+
       const std::optional<bool>& naturalScroll = override != nullptr && override->naturalScroll
           ? override->naturalScroll
           : isTouchpad ? input.touchpad.naturalScroll
@@ -324,6 +422,23 @@ namespace umbriel {
           override != nullptr && override->naturalScroll ? "input.device.natural_scroll"
               : isTouchpad                               ? "input.touchpad.natural_scroll"
                                                          : "input.mouse.natural_scroll"
+      );
+
+      // Button scrolling has no `[input.touchpad]` counterpart: a touchpad only gets it from its own device rule,
+      // never from `[input.mouse]`, since claiming a button there would cost the pad its two-finger scrolling.
+      const std::optional<uint32_t> scrollButton = override != nullptr && override->scrollButton
+          ? override->scrollButton
+          : isTouchpad ? std::nullopt
+                       : input.mouse.scrollButton;
+      const std::optional<bool> scrollButtonLock = override != nullptr && override->scrollButtonLock
+          ? override->scrollButtonLock
+          : isTouchpad ? std::nullopt
+                       : input.mouse.scrollButtonLock;
+      applyScrollButton(
+          libinputDevice, device, scrollButton, scrollButtonLock,
+          override != nullptr && override->scrollButton ? "input.device.scroll_button" : "input.mouse.scroll_button",
+          override != nullptr && override->scrollButtonLock ? "input.device.scroll_button_lock"
+                                                            : "input.mouse.scroll_button_lock"
       );
 
       const std::optional<AccelProfile> accelProfile = override != nullptr && override->accelProfile

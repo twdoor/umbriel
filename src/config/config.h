@@ -132,6 +132,13 @@ namespace umbriel {
     Window,
   };
 
+  // How a touchpad turns a physical press into a button: soft button areas along
+  // the bottom edge, or the finger count at press time.
+  enum class ClickMethod : uint8_t {
+    ButtonAreas,
+    ClickFinger,
+  };
+
   enum class WindowDragToggle : uint8_t {
     None,
     Floating,
@@ -679,12 +686,18 @@ namespace umbriel {
         std::optional<double> scrollFactor;
         std::optional<bool> disableWhileTyping;
         std::optional<bool> disableOnExternalMouse;
+        std::optional<ClickMethod> clickMethod;
         bool operator==(const Touchpad&) const = default;
       } touchpad;
 
       struct Mouse {
         std::optional<bool> naturalScroll;
         std::optional<AccelProfile> accelProfile;
+        // Evdev BTN_* code libinput turns into a scroll modifier: holding it makes pointer motion scroll instead of
+        // clicking. Unset leaves the device's libinput default alone.
+        std::optional<uint32_t> scrollButton;
+        // One press latches scrolling on, the next releases it, instead of requiring a hold.
+        std::optional<bool> scrollButtonLock;
         double sensitivity = 0.0;
         int scrollWheelStep = 60;
         bool operator==(const Mouse&) const = default;
@@ -732,6 +745,9 @@ namespace umbriel {
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
         std::optional<bool> disableWhileTyping;
+        std::optional<ClickMethod> clickMethod;
+        std::optional<uint32_t> scrollButton;
+        std::optional<bool> scrollButtonLock;
         bool operator==(const Device&) const = default;
       };
 

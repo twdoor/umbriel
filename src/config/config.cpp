@@ -363,6 +363,51 @@ namespace umbriel {
       };
     }
 
+    std::optional<ClickMethod> readClickMethod(Section& section, std::string_view context) {
+      const toml::node* node = section.take("click_method");
+      if (node == nullptr) {
+        return std::nullopt;
+      }
+      const auto* value = node->as_string();
+      if (value == nullptr) {
+        warnAt(node->source(), "{}.click_method must be a string", context);
+        return std::nullopt;
+      }
+      const std::string method = lowercase(value->get());
+      if (method == "button_areas") {
+        return ClickMethod::ButtonAreas;
+      }
+      if (method == "clickfinger") {
+        return ClickMethod::ClickFinger;
+      }
+      warnAt(
+          node->source(), R"(invalid {}.click_method "{}" (expected "button_areas" or "clickfinger"))", context,
+          value->get()
+      );
+      return std::nullopt;
+    }
+
+    std::optional<uint32_t> readScrollButton(Section& section, std::string_view context) {
+      const toml::node* node = section.take("scroll_button");
+      if (node == nullptr) {
+        return std::nullopt;
+      }
+      const auto* value = node->as_string();
+      if (value == nullptr) {
+        warnAt(node->source(), "{}.scroll_button must be a string", context);
+        return std::nullopt;
+      }
+      if (const uint32_t button = mouseButtonFromName(value->get()); button != 0) {
+        return button;
+      }
+      warnAt(
+          node->source(),
+          R"(invalid {}.scroll_button "{}" (expected "MouseLeft", "MouseRight", "MouseMiddle", "MouseBack", or "MouseForward"))",
+          context, value->get()
+      );
+      return std::nullopt;
+    }
+
     std::optional<std::array<float, 6>> readCalibrationMatrix(Section& section, std::string_view context) {
       const toml::node* node = section.take("calibration_matrix");
       if (node == nullptr) {
@@ -1163,8 +1208,11 @@ namespace umbriel {
             .boolean("tap", device.tap)
             .boolean("natural_scroll", device.naturalScroll)
             .real("sensitivity", -1.0, 1.0, device.sensitivity)
-            .boolean("disable_while_typing", device.disableWhileTyping);
+            .boolean("disable_while_typing", device.disableWhileTyping)
+            .boolean("scroll_button_lock", device.scrollButtonLock);
         device.accelProfile = readAccelProfile(keys, "accel_profile", "input.device");
+        device.clickMethod = readClickMethod(keys, "input.device");
+        device.scrollButton = readScrollButton(keys, "input.device");
 
         if (!validName) {
           continue;
@@ -1237,14 +1285,17 @@ namespace umbriel {
               .boolean("disable_while_typing", in.touchpad.disableWhileTyping)
               .boolean("disable_on_external_mouse", in.touchpad.disableOnExternalMouse);
           in.touchpad.accelProfile = readAccelProfile(t, "accel_profile", "input.touchpad");
+          in.touchpad.clickMethod = readClickMethod(t, "input.touchpad");
         });
         s.sub("mouse", [&](Section& m) {
           m.boolean("natural_scroll", in.mouse.naturalScroll)
               .real("sensitivity", -1.0, 1.0, in.mouse.sensitivity)
-              .integer("scroll_wheel_step", 1, 1000, in.mouse.scrollWheelStep);
+              .integer("scroll_wheel_step", 1, 1000, in.mouse.scrollWheelStep)
+              .boolean("scroll_button_lock", in.mouse.scrollButtonLock);
           if (const auto profile = readAccelProfile(m, "accel_profile", "input.mouse")) {
             in.mouse.accelProfile = *profile;
           }
+          in.mouse.scrollButton = readScrollButton(m, "input.mouse");
         });
         s.sub("tablet", [&](Section& t) {
           t.boolean("enabled", in.tablet.enabled)
@@ -1540,6 +1591,28 @@ namespace umbriel {
         configured.push_back(binding);
         std::erase_if(loaded.keybinds, [&](const Keybind& existing) { return sameChord(existing, binding); });
         loaded.keybinds.push_back(std::move(binding));
+      }
+    }
+
+    // libinput swallows the scroll button while it turns motion into scrolling, but a press released without any
+    // motion still reaches the compositor as a click, so a bind on that button fires only in that case.
+    void warnScrollButtonBinds(const Config& loaded) {
+      const auto report = [&loaded](std::optional<uint32_t> button, std::string_view context) {
+        if (!button) {
+          return;
+        }
+        if (std::ranges::none_of(loaded.keybinds, [&](const Keybind& bind) { return bind.mouseButton == *button; })) {
+          return;
+        }
+        const char* name = mouseButtonName(*button);
+        warnNoSrc(
+            "{} claims {} for scrolling, so binds on it fire only when it is released without motion", context,
+            name != nullptr ? name : "it"
+        );
+      };
+      report(loaded.input.mouse.scrollButton, "input.mouse.scroll_button");
+      for (const Config::Input::Device& device : loaded.input.devices) {
+        report(device.scrollButton, "input.device.scroll_button");
       }
     }
 
@@ -1988,6 +2061,7 @@ namespace umbriel {
           readLayerRules(root, loaded);
           readSecurityContextRules(root, loaded);
           readWorkspaces(root, loaded);
+          warnScrollButtonBinds(loaded);
         }
 
         // Reject config if any error-level diagnostics were emitted.
