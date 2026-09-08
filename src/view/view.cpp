@@ -998,8 +998,6 @@ namespace umbriel {
 
   pid_t View::pid() const { return m_xwayland ? -1 : surfaceClientPid(m_toplevel->base->surface); }
 
-  pid_t View::pid() const { return m_xwayland ? -1 : surfaceClientPid(m_toplevel->base->surface); }
-
   void View::onMap(wl_listener* listener, void* /*data*/) {
     View* self = wl_container_of(listener, self, m_map);
     self->handleMap();
