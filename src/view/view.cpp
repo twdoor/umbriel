@@ -19,6 +19,7 @@ extern "C" {
 // clang-format off
 #include <algorithm>
 #include <cmath>
+#include <ranges>
 #include <utility>
 #include "wlr.h"
 // clang-format on
@@ -39,12 +40,6 @@ namespace umbriel {
       }
       wlr_scene_buffer_set_opacity(buffer, opacity);
     }
-
-    // How long the layout withholds the column size after an unfullscreen configure (sent with size 0x0).
-    // xwayland-satellite acks configures immediately, so acks prove nothing; the X11 client's re-request arrives
-    // through a full X round trip (observed 310-330 ms for a loaded game). A client that truly accepts windowed mode
-    // exits the grace early by committing a geometry different from its fullscreen one.
-    constexpr uint64_t kUnfullscreenGraceMsec = 1000;
 
     bool looksTiled(const wlr_xdg_toplevel* toplevel) {
       const auto& state = toplevel->current;
@@ -370,7 +365,8 @@ namespace umbriel {
     } else {
       // Output membership tracks the physical monitor, not the active workspace: a window on another workspace is still
       // on its output. Leaving the output here would make foreign-toplevel clients drop the window from their task
-      // lists. Scratchpad windows have no workspace at all, so they genuinely leave.
+      // lists. Workspace-less overlays leave here, then their owner can
+      // explicitly advertise a retained output assignment.
       if (m_workspace == nullptr) {
         leaveForeignOutput();
       }
@@ -441,8 +437,8 @@ namespace umbriel {
     wlr_scene_node_raise_to_top(&m_sceneTree->node);
 
     const auto views = m_server->registry().all();
-    for (auto it = views.rbegin(); it != views.rend(); ++it) {
-      View* child = it->get();
+    for (const auto& view : std::views::reverse(views)) {
+      View* child = view.get();
       if (child != this && child->transientParent() == this) {
         child->raiseTransientTree();
       }
@@ -687,8 +683,17 @@ namespace umbriel {
       updateShadow(width, height);
     }
     updateBlur(width, height);
+    syncOwnedPresentation();
+  }
+
+  void View::syncOwnedPresentation() {
     if (m_workspace != nullptr) {
       m_workspace->syncViewPresentation(this);
+      return;
+    }
+    if (ScratchpadManager* scratchpad = m_server->scratchpadManager();
+        scratchpad != nullptr && scratchpad->contains(this)) {
+      scratchpad->syncViewPresentation(this);
     }
   }
 
@@ -708,9 +713,7 @@ namespace umbriel {
     updateBorderGeometry();
     updateBlur();
     updateShadow();
-    if (m_workspace != nullptr) {
-      m_workspace->syncViewPresentation(this);
-    }
+    syncOwnedPresentation();
   }
 
   void View::cancelSizeAnimation() {
@@ -790,9 +793,11 @@ namespace umbriel {
   void View::beginResizeAnimation(int width, int height, bool allowFullscreen) {
     const Overview* overview = m_server->overview();
     const bool presentedInOverview = overview != nullptr && overview->active() && m_workspace != nullptr;
+    const ScratchpadManager* scratchpad = m_server->scratchpadManager();
+    const bool presentedInScratchpad = scratchpad != nullptr && scratchpad->contains(this);
     if (!m_mapped
         || (!m_onActiveWorkspace && !presentedInOverview)
-        || (m_workspace == nullptr && !allowFullscreen)
+        || (m_workspace == nullptr && !presentedInScratchpad && !allowFullscreen)
         || (!allowFullscreen && (m_toplevel->scheduled.fullscreen || m_toplevel->current.fullscreen))
         || width <= 0
         || height <= 0) {
@@ -925,9 +930,7 @@ namespace umbriel {
       m_decoration.setShadowPosition(cx, cy);
       // Clips are derived from the node's current position; refresh them as the
       // node moves or partial-visibility trims land displaced.
-      if (m_workspace != nullptr) {
-        m_workspace->syncViewPresentation(this);
-      }
+      syncOwnedPresentation();
       if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
         overview->onViewPresentationChanged(this);
       }
@@ -969,29 +972,6 @@ namespace umbriel {
       m_decoration.setBorderRawColor(m_borderColorAnim.current(), effectiveOpacity());
       active = active || m_borderColorAnim.animating();
     }
-    // Unfullscreen grace: the compositor asked the client to leave fullscreen with a size-0x0 configure. A compliant
-    // client commits its own windowed geometry (handleCommit ends the grace and tiles it); a client that re-requests
-    // fullscreen cancels it in setFullscreen. Expiry means the client ignored the state change entirely: some game
-    // engines only react to an actual resize, and resizing them permanently breaks their X11 mouse mapping, so
-    // re-assert fullscreen instead of poking them with the column size.
-    if (m_pendingUnfullscreenSize) {
-      if (m_unfullscreenGraceStartMsec == 0) {
-        m_unfullscreenGraceStartMsec = nowMsec;
-      }
-      if (nowMsec - m_unfullscreenGraceStartMsec >= kUnfullscreenGraceMsec) {
-        m_pendingUnfullscreenSize = false;
-        m_unfullscreenGraceStartMsec = 0;
-        if (m_tiled && !m_toplevel->scheduled.fullscreen) {
-          kLog.debug(
-              "unfullscreen grace expired without compliance for '{}'; re-asserting fullscreen",
-              m_toplevel->app_id != nullptr ? m_toplevel->app_id : "?"
-          );
-          setFullscreen(true);
-        }
-      } else {
-        active = true;
-      }
-    }
     syncAnimationShaders();
     return active;
   }
@@ -1011,11 +991,12 @@ namespace umbriel {
         || sizeAnimating()
         || m_fade.animating()
         || m_borderColorAnim.animating()
-        || m_focusDim.animating()
-        || m_pendingUnfullscreenSize;
+        || m_focusDim.animating();
   }
 
-  bool View::layoutFullscreen() const { return m_toplevel->scheduled.fullscreen || m_pendingUnfullscreenSize; }
+  bool View::layoutFullscreen() const { return m_toplevel->scheduled.fullscreen; }
+
+  pid_t View::pid() const { return m_xwayland ? -1 : surfaceClientPid(m_toplevel->base->surface); }
 
   pid_t View::pid() const { return m_xwayland ? -1 : surfaceClientPid(m_toplevel->base->surface); }
 
@@ -1122,6 +1103,11 @@ namespace umbriel {
   wlr_box View::floatingUsableArea() const {
     if (m_workspace != nullptr && m_workspace->group() != nullptr && m_workspace->group()->output() != nullptr) {
       return m_workspace->group()->output()->usableArea();
+    }
+    if (m_server != nullptr && m_server->scratchpadManager() != nullptr) {
+      if (Output* output = m_server->scratchpadManager()->outputFor(this)) {
+        return output->usableArea();
+      }
     }
     return m_server->usableAreaAt(m_sceneTree->node.x, m_sceneTree->node.y);
   }
@@ -1548,7 +1534,12 @@ namespace umbriel {
     if (m_workspace != nullptr && m_workspace->group() != nullptr && m_workspace->group()->output() != nullptr) {
       return m_workspace->group()->output();
     }
-    // Scratchpad / floating views with no workspace: find the output containing the view's scene coordinates.
+    if (m_server != nullptr && m_server->scratchpadManager() != nullptr) {
+      if (Output* output = m_server->scratchpadManager()->outputFor(this)) {
+        return output;
+      }
+    }
+    // Other floating views with no workspace use their scene coordinates.
     if (m_sceneTree != nullptr && m_server != nullptr && m_server->outputLayout() != nullptr) {
       wlr_output* wlrOut = wlr_output_layout_output_at(
           m_server->outputLayout(), m_sceneTree->node.x + (m_toplevel ? m_toplevel->current.width / 2 : 0),
@@ -1665,6 +1656,54 @@ namespace umbriel {
     return {geo.width, geo.height};
   }
 
+  std::optional<std::array<int, 2>> View::floatingAxisBasis(bool width) const {
+    if (!m_mapped || m_tiled) {
+      return std::nullopt;
+    }
+    const wlr_box usable = floatingUsableArea();
+    const auto [basisWidth, basisHeight] = floatingSize();
+    const int basis = width ? basisWidth : basisHeight;
+    const int extent = width ? usable.width : usable.height;
+    if (extent <= 0 || basis <= 0) {
+      return std::nullopt;
+    }
+    return std::array{basis, extent};
+  }
+
+  std::optional<double> View::floatingFraction(bool width) const {
+    const auto axis = floatingAxisBasis(width);
+    if (!axis) {
+      return std::nullopt;
+    }
+    return floatingSizeFraction((*axis)[0], (*axis)[1]);
+  }
+
+  bool View::resizeFloatingFractions(
+      const std::optional<double>& widthFraction, const std::optional<double>& heightFraction
+  ) {
+    if (!m_mapped || m_tiled || m_toplevel->current.fullscreen || m_toplevel->scheduled.fullscreen) {
+      return false;
+    }
+    const wlr_box usable = floatingUsableArea();
+    if (usable.width <= 0 || usable.height <= 0) {
+      return false;
+    }
+    const XdgSizeHints hints = xdgSizeHints(m_toplevel);
+    const auto [basisWidth, basisHeight] = floatingSize();
+    const int width =
+        widthFraction ? clampXdgWidth(floatingFractionSize(*widthFraction, usable.width), hints) : basisWidth;
+    const int height =
+        heightFraction ? clampXdgHeight(floatingFractionSize(*heightFraction, usable.height), hints) : basisHeight;
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    dropMaximizedForResize();
+    requestFloatingSize(width, height);
+    beginResizeAnimation(width, height);
+    clampFloatingPositionForSize(width, height);
+    return true;
+  }
+
   std::array<int, 2> View::floatingRestoreSize() const {
     if (m_floating.size()) {
       return *m_floating.size();
@@ -1778,7 +1817,7 @@ namespace umbriel {
       output = m_workspace->group()->output();
     }
     if (output == nullptr) {
-      output = m_server->outputFromWlr(m_server->preferredOutput());
+      output = currentOutput();
     }
     wlr_output* wlrOutput = output != nullptr ? output->wlr() : m_server->preferredOutput();
     wlr_box fullArea{};
@@ -1796,9 +1835,14 @@ namespace umbriel {
       setPosition(fullArea.x, fullArea.y);
     }
 
+    // Present at the node's absolute position: a workspace mid-slide offsets its
+    // whole tree on either axis, and the local origin does not carry that.
+    int lx = 0;
+    int ly = 0;
+    wlr_scene_node_coords(&m_sceneTree->node, &lx, &ly);
     const wlr_box target{
-        m_sceneTree->node.x,
-        m_sceneTree->node.y,
+        lx,
+        ly,
         fullArea.width,
         fullArea.height,
     };
@@ -2008,6 +2052,7 @@ namespace umbriel {
 
   void View::handleUnmap() {
     setUrgent(false);
+    m_floatingMaximized = false;
     m_maximizedToEdges = false;
     m_hasFullscreenRestoreBox = false;
     if (m_pinned) {
@@ -2297,18 +2342,6 @@ namespace umbriel {
         m_presentation.setSize(geometry.width, geometry.height);
       }
     }
-    // The client committed a geometry other than its fullscreen one while the unfullscreen grace ran: it accepted
-    // windowed mode, so the layout may assign the column size now instead of waiting out the grace.
-    if (m_pendingUnfullscreenSize
-        && !m_toplevel->current.fullscreen
-        && !wlr_box_equal(&m_toplevel->base->geometry, &m_unfullscreenGeometry)) {
-      m_pendingUnfullscreenSize = false;
-      m_unfullscreenGraceStartMsec = 0;
-      if (m_mapped && m_tiled && m_workspace != nullptr) {
-        m_workspace->snapVisible(this);
-        m_workspace->markArrange(true);
-      }
-    }
     // Re-apply output clip after configure ack so Super+F / resize sizes show
     // without needing a workspace switch (clip boxes are copied, not live).
     if (m_mapped && m_tiled && m_workspace != nullptr && m_workspace->active()) {
@@ -2324,10 +2357,9 @@ namespace umbriel {
         if (!sizeAnimating()) {
           syncFloatingSurfaceClip();
         }
-        // Enable + clip to the home output (previously done per render pass).
-        if (m_workspace != nullptr) {
-          m_workspace->syncViewPresentation(this);
-        }
+        // Enable + clip through the current presentation owner (previously
+        // done per render pass).
+        syncOwnedPresentation();
       }
     } else {
       updateBlur();
@@ -2399,6 +2431,7 @@ namespace umbriel {
 
   void View::setMaximized(bool maximized, bool animate) {
     if (m_tiled && m_workspace != nullptr) {
+      m_floatingMaximized = false;
       if (m_maximizedToEdges) {
         setMaximizedToEdges(false);
       }
@@ -2415,9 +2448,14 @@ namespace umbriel {
       return;
     }
 
-    // Detached scratchpad views have no presentation owner to apply a resize
-    // animation, so keep their position and size transition in lockstep.
-    const bool animateFloating = animate && m_workspace != nullptr;
+    // Record the target before cancelSizeAnimation synchronizes the current
+    // presentation back through ScratchpadManager.
+    m_floatingMaximized = maximized;
+    const ScratchpadManager* scratchpad = m_server->scratchpadManager();
+    const bool visibleScratchpad = m_onActiveWorkspace && scratchpad != nullptr && scratchpad->contains(this);
+    // A visible scratchpad has a manager-owned presentation even though it is
+    // detached from a workspace, so its position and size can animate together.
+    const bool animateFloating = animate && (m_workspace != nullptr || visibleScratchpad);
     if (!animateFloating) {
       cancelSizeAnimation();
     }
@@ -2499,10 +2537,9 @@ namespace umbriel {
     if (!m_toplevel->base->initialized || maximized == m_maximizedToEdges) {
       return;
     }
-    if (maximized && m_toplevel->scheduled.fullscreen) {
-      setFullscreen(false);
-      m_pendingUnfullscreenSize = false;
-      m_unfullscreenGraceStartMsec = 0;
+    const bool leavingFullscreen = maximized && m_toplevel->scheduled.fullscreen;
+    if (leavingFullscreen) {
+      setFullscreen(false, FullscreenExitLayout::DeferToCaller);
     }
     if (m_tiled || !animate) {
       cancelSizeAnimation();
@@ -2522,20 +2559,40 @@ namespace umbriel {
     showDecorations(!maximized && !m_toplevel->scheduled.fullscreen);
     if (m_workspace != nullptr) {
       m_workspace->snapVisible(this);
-      m_workspace->markArrange(animate);
+      if (leavingFullscreen) {
+        // setFullscreen deferred its layout so this final maximize state and edge size replace the pending fullscreen
+        // configure together.
+        m_workspace->arrange(animate);
+      } else {
+        m_workspace->markArrange(animate);
+      }
     }
     updateForeignState();
   }
 
   void View::toggleMaximizedToEdges() { setMaximizedToEdges(!m_maximizedToEdges); }
 
-  void View::toggleMaximized() { setMaximized(!m_toplevel->scheduled.maximized); }
+  void View::toggleMaximized() { setMaximized(m_tiled ? !m_toplevel->scheduled.maximized : !m_floatingMaximized); }
+
+  void View::restoreMaximizedForMove() {
+    // Fullscreen temporarily covers an underlying floating-maximized state.
+    // Moving the fullscreen surface must not consume the state that should be
+    // revealed when fullscreen ends.
+    if (m_toplevel->scheduled.fullscreen || m_toplevel->current.fullscreen) {
+      return;
+    }
+    if (m_maximizedToEdges) {
+      setMaximizedToEdges(false, false);
+    } else if (m_floatingMaximized) {
+      setMaximized(false, false);
+    }
+  }
 
   void View::dropMaximizedForResize() {
     if (m_tiled || !m_toplevel->base->initialized) {
       return;
     }
-    if (!m_maximizedToEdges && !m_toplevel->scheduled.maximized) {
+    if (!m_maximizedToEdges && !m_floatingMaximized) {
       return;
     }
     // Deliberately not setMaximized(false)/setMaximizedToEdges(false): those
@@ -2544,6 +2601,7 @@ namespace umbriel {
     cancelSizeAnimation();
     const bool wasEdges = m_maximizedToEdges;
     m_maximizedToEdges = false;
+    m_floatingMaximized = false;
     m_restoreMaximizedToEdges = false;
     m_hasMaximizeRestoreBox = false;
     wlr_xdg_toplevel_set_maximized(m_toplevel, false);
@@ -2587,16 +2645,6 @@ namespace umbriel {
 
     // Honor the client's requested state (not a blind toggle).
     setFullscreen(requested);
-    if (!requested && m_pendingUnfullscreenSize) {
-      // The client itself asked for windowed mode: no compliance grace is
-      // needed, size it into its column right away.
-      m_pendingUnfullscreenSize = false;
-      m_unfullscreenGraceStartMsec = 0;
-      if (m_tiled && m_workspace != nullptr) {
-        m_workspace->snapVisible(this);
-        m_workspace->markArrange(true);
-      }
-    }
   }
 
   void View::handleSetParent() {
@@ -2717,6 +2765,7 @@ namespace umbriel {
     if (m_maximizedToEdges) {
       setMaximizedToEdges(false, false);
     }
+    m_floatingMaximized = false;
     const bool unpinning = !floating && m_pinned;
     if (unpinning) {
       m_pinned = false;
@@ -2734,14 +2783,10 @@ namespace umbriel {
     // for the instant before it re-requests fullscreen, and game engines latch that transient windowed size for their
     // input mapping, leaving hover and clicks dead outside it (X geometry recovers, the engine's notion does not).
     if (floating && fullscreen) {
-      setFullscreen(false);
+      setFullscreen(false, FullscreenExitLayout::DeferToCaller);
       // Remember to restore on the next re-tile. Set after setFullscreen,
       // which clears the flag on every leave-fullscreen path.
       m_refullscreenOnTile = true;
-      // The float path requests its own size below; the tiled-column size
-      // deferral set by setFullscreen(false) does not apply to floats.
-      m_pendingUnfullscreenSize = false;
-      m_unfullscreenGraceStartMsec = 0;
     }
     // Consume the memory: a client that itself left fullscreen while floating cleared it (setFullscreen(false) below
     // via its request), so this only fires for a float episode the client still considers fullscreen.
@@ -2850,7 +2895,7 @@ namespace umbriel {
     }
   }
 
-  void View::setFullscreen(bool fullscreen) {
+  void View::setFullscreen(bool fullscreen, FullscreenExitLayout exitLayout) {
     m_deferredUnfullscreen.clear();
     kLog.debug(
         "set_fullscreen '{}' [{}] -> {} (tiled={}, ws_active={})",
@@ -2927,36 +2972,30 @@ namespace umbriel {
     applyCornerRadius();
     updateBlur();
     updateShadow();
+    if (!fullscreen && m_restoreMaximizedToEdges) {
+      m_restoreMaximizedToEdges = false;
+      // A compound transition owns its final state. Maximize-to-edges applies that state in its caller, while floating
+      // must not carry a stale maximized state after detaching from the layout.
+      if (exitLayout == FullscreenExitLayout::Immediate) {
+        setMaximizedToEdges(true);
+      }
+    }
     if (!fullscreen) {
       // scheduled.fullscreen is already false; arrange into usable area (exclusive zones).
       if (m_tiled && m_workspace != nullptr) {
-        // xwayland-satellite clients only: send the unfullscreen with size 0x0 (client picks) and withhold the column
-        // size for a grace period. Game engines behind satellite latch a transient windowed resize for input mapping
-        // and never recover (hover and clicks go dead outside it even after the geometry returns), and they only notice
-        // the state change when a resize pokes them, so on expiry the grace re-asserts fullscreen instead of resizing.
-        // Wayland-native clients handle resizes fine and commonly keep their size on 0x0, which would wrongly bounce
-        // them back to fullscreen; they keep the immediate column sizing.
-        if (m_xwayland) {
-          m_pendingUnfullscreenSize = true;
-          m_unfullscreenGraceStartMsec = 0;
-          m_unfullscreenGeometry = m_toplevel->base->geometry;
-          wlr_xdg_toplevel_set_size(m_toplevel, 0, 0);
-          // The grace countdown runs on frame ticks; make sure one is coming.
-          scheduleFrame();
-        } else {
+        if (exitLayout == FullscreenExitLayout::Immediate) {
+          // wlroots has already scheduled the fullscreen-state configure. Arrange synchronously so its size is
+          // replaced with the restored tile before that configure is sent, keeping state and geometry in one client
+          // transition.
           m_workspace->snapVisible(this);
+          m_workspace->arrange(true);
+        } else {
+          // A compound transition, such as floating or maximize-to-edges, sets its final geometry after this returns.
+          m_workspace->markArrange(true);
         }
-        m_workspace->markArrange(!m_xwayland);
       } else if (!restoreFloating) {
         placeInUsableArea();
       }
-    } else {
-      m_pendingUnfullscreenSize = false;
-      m_unfullscreenGraceStartMsec = 0;
-    }
-    if (!fullscreen && m_restoreMaximizedToEdges) {
-      m_restoreMaximizedToEdges = false;
-      setMaximizedToEdges(true);
     }
     updateForeignState();
     if (m_workspace != nullptr && m_workspace->group() != nullptr) {

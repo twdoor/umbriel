@@ -98,6 +98,7 @@ namespace umbriel {
   struct Keybind;
 
   class Cursor;
+  class BackendManager;
   class FocusManager;
   class XwaylandSupervisor;
   class ConfigWatcher;
@@ -341,7 +342,8 @@ namespace umbriel {
     // Input wake applies only when every configured output is powered off. A named DPMS action therefore remains in
     // effect while another configured output is still awake.
     void wakeDpmsOutputs();
-    void refocus(Output* preferred = nullptr) { m_focus.refocus(preferred); }
+    void refocus() { m_focus.refocus(); }
+    void refocus(Output* preferred) { m_focus.refocus(preferred); }
     void reconcileDynamicWorkspaces();
     void clearKeyboardFocus() { m_focus.clearKeyboardFocus(); }
     void deactivateViews(View* except = nullptr) { m_focus.deactivateViews(except); }
@@ -492,6 +494,7 @@ namespace umbriel {
     };
 
     wl_display* m_display = nullptr;
+    std::unique_ptr<BackendManager> m_backendManager;
     wlr_backend* m_backend = nullptr;
     wlr_session* m_session = nullptr;
     wlr_renderer* m_renderer = nullptr;

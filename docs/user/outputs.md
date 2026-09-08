@@ -18,7 +18,7 @@ mode = "1920x1080@180"
 Both forms are matched case-insensitively, and both work anywhere an output is
 named: output sections, `default_output` on a window rule, `map_to_output` on a
 tablet, `output` on a workspace rule, and the `:OUTPUT` suffix on actions such
-as `dpms-off` and `scratchpad-toggle`.
+as `dpms-off`.
 
 Prefer the monitor form when a rule belongs to a particular display rather than
 to a particular port. A connector is a property of the machine, so a laptop used
@@ -42,12 +42,14 @@ its windows to the active workspace on another enabled output, and moves them
 back to the workspace they came from when it returns. The output also returns
 to its previously active workspace. Floating and pinned windows retain their
 full-output-relative positions even when a panel recreates its exclusive zone
-after the output. Scratchpad windows move with their output assignment and
-return with it too. Tiled windows retain their order, grouping, split ratios,
-and sizes in the scrolling, dwindle, and master layouts. Taskbars and docks
-continue to associate windows on inactive workspaces with the restored output
-without requiring each workspace to be visited. If no enabled output remains,
-windows stay without a workspace until one becomes available.
+after the output. A scratchpad is global, but its window group has a current
+output. If that output disappears, the whole scratchpad moves to another
+enabled output and returns with its group positions when the original output
+returns. Tiled windows retain their order, grouping, split ratios, and sizes in
+the scrolling, dwindle, and master layouts. Taskbars and docks continue to
+associate windows on inactive workspaces with the restored output without
+requiring each workspace to be visited. If no enabled output remains, windows
+stay without a workspace until one becomes available.
 
 Run `umbriel outputs` inside a session to list connector names, copyable monitor
 configuration names, and modes. `umbriel outputs --json` prints the same
@@ -84,6 +86,7 @@ workspaces = 5
 | `sdr_white`                                  | float                             | `203`       | SDR reference white in cd/m2 while the output is in HDR mode (80-1000).                                                                             |
 | `workspaces`                                 | int, string array, or `"dynamic"` | `"dynamic"` | Dynamic numbered workspaces, a static count from 1 to 64, or a static ordered list of 1 to 64 names.                                                |
 | `min_workspaces`                             | int                               | `1`         | Workspace count a dynamic output never shrinks below (1-64). Rejected together with a static `workspaces` inventory.                                |
+| `workspace_axis`                             | string                            | `"vertical"` | Axis the output's workspaces are arranged along: `"vertical"` or `"horizontal"`. The scrolling strip runs perpendicular to it. See [Workspace axis](workspaces.md#workspace-axis). |
 | `transform`                                  | string                            | `"normal"`  | Output rotation/flip.                                                                                                                               |
 | `layout.scrolling.default_width_fraction`    | float                             | inherited   | Initial scrolling strip-axis extent for new columns on this output (0.1-1.0). Inherits the global value when omitted.                               |
 
@@ -315,8 +318,9 @@ workspaces no longer appear in the overview. The output's workspaces and their
 windows are preserved, so setting `enabled = true` back (or removing the key)
 restores the monitor exactly as it was. Tiled windows retain their order,
 grouping, split ratios, and sizes in the scrolling, dwindle, and master layouts.
-Its active workspace and the positions of floating, pinned, and scratchpad
-windows return too. A disabled output is never picked as a focus, placement, or
+Its active workspace and the positions of floating and pinned windows return
+too. Any scratchpad displaced from the output returns as a group with its
+positions. A disabled output is never picked as a focus, placement, or
 layer-surface target.
 
 ```toml

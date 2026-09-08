@@ -436,6 +436,7 @@ namespace umbriel {
     bool tiled = view->tiled();
     if (ScratchpadManager* scratchpad = m_server->scratchpadManager();
         scratchpad != nullptr && scratchpad->contains(view)) {
+      view->restoreMaximizedForMove();
       view->setFloating(true);
       tiled = false;
     }
@@ -647,6 +648,14 @@ namespace umbriel {
         && (grab->workspace == nullptr
             || grab->session == nullptr
             || grab->session->ownerLayout() != &grab->workspace->layout())) {
+      resetMode();
+    }
+  }
+
+  void Cursor::cancelLayoutInteraction() {
+    // An axis change keeps the same layout object, so cancelStaleTiledResize()
+    // cannot see it; the session's edges would still mean the old orientation.
+    if (std::holds_alternative<ScrollDragGrab>(m_grab) || std::holds_alternative<TiledResizeGrab>(m_grab)) {
       resetMode();
     }
   }

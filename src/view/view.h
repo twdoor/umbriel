@@ -77,12 +77,8 @@ namespace umbriel {
     // True when unpinning puts the window back in the tiled layout, because
     // that is where it was pinned from.
     [[nodiscard]] bool restoresTiledOnUnpin() const { return m_restoreTiledAfterUnpin; }
-    // True while an unfullscreen configure with size 0x0 is unacknowledged;
-    // Workspace::arrange must not impose the column size yet.
-    [[nodiscard]] bool awaitingUnfullscreenSize() const { return m_pendingUnfullscreenSize; }
     [[nodiscard]] bool maximizedToEdges() const { return m_maximizedToEdges; }
-    // Fullscreen for layout purposes: a view inside the unfullscreen grace keeps its fullscreen slot and presentation
-    // so the strip does not reflow (and no resize leaks) while the client decides how to respond.
+    // Fullscreen for layout purposes follows the state already scheduled for the next configure.
     [[nodiscard]] bool layoutFullscreen() const;
     [[nodiscard]] bool urgent() const { return m_urgent; }
     // The window id the ext-foreign-toplevel protocol hands to clients, which the IPC surface reuses verbatim for its
@@ -169,6 +165,15 @@ namespace umbriel {
     void requestFloatingSize(int width, int height);
     // The pending compositor request, else the committed geometry.
     [[nodiscard]] std::array<int, 2> floatingSize() const;
+    // The current floating size and usable output extent on one axis, as
+    // {size, extent}. Detached scratchpads use their assigned output.
+    [[nodiscard]] std::optional<std::array<int, 2>> floatingAxisBasis(bool width) const;
+    // The current floating size as a fraction of its usable output axis.
+    [[nodiscard]] std::optional<double> floatingFraction(bool width) const;
+    // Resize a floating view by usable-area fractions. An omitted axis keeps
+    // its current pending or committed size.
+    bool
+    resizeFloatingFractions(const std::optional<double>& widthFraction, const std::optional<double>& heightFraction);
     // The size a float episode lands on: the remembered floating size, else the
     // last size the client acked, was configured with, or was assigned.
     [[nodiscard]] std::array<int, 2> floatingRestoreSize() const;
@@ -213,6 +218,9 @@ namespace umbriel {
     // output's usable area and restores to the box it had before; tiled windows
     // toggle their column's full-width state.
     void toggleMaximized();
+    // Restore a floating maximized window to its saved box before a pointer
+    // move takes ownership of its position.
+    void restoreMaximizedForMove();
     // Leave maximized or edges-maximized state without restoring the pre-maximize
     // box: the caller assigns its own size next. Floating windows only; tiled
     // windows clear their full-width state through the layout.
@@ -246,6 +254,11 @@ namespace umbriel {
     friend class Popup;
     friend class Overview;
     friend class Workspace;
+
+    enum class FullscreenExitLayout {
+      Immediate,
+      DeferToCaller,
+    };
 
     struct ViewSurfaceWatch {
       View* view = nullptr;
@@ -292,7 +305,7 @@ namespace umbriel {
     void setMaximized(bool maximized, bool animate = true);
     void handleRequestFullscreen();
     void handleSetParent();
-    void setFullscreen(bool fullscreen);
+    void setFullscreen(bool fullscreen, FullscreenExitLayout exitLayout = FullscreenExitLayout::Immediate);
     void handleSetTitle();
     void handleSetAppId();
     void handleForeignActivate();
@@ -327,6 +340,10 @@ namespace umbriel {
     void clearViewSurfaceWatches();
     void beginCloseAnimation();
     void applyPresentedSize();
+    // Refresh presentation through whichever owner currently holds the view.
+    // Scratchpads are detached from workspaces but still need animated crop
+    // and chrome updates.
+    void syncOwnedPresentation();
     // Presentation for a window held by an interactive move: derived from the
     // presented size at the node's current position, so a drag that changes the
     // window's target size keeps its chrome and crop while the layout stays out
@@ -451,6 +468,7 @@ namespace umbriel {
     // placement snaps (avoids animating from the default (0,0) world origin).
     bool m_positioned = false;
     bool m_tiled = false;
+    bool m_floatingMaximized = false;
     bool m_maximizedToEdges = false;
     bool m_restoreMaximizedToEdges = false;
     wlr_box m_fullscreenRestoreBox{};
@@ -462,18 +480,9 @@ namespace umbriel {
     // it). Cleared whenever fullscreen is left by any other path, so a client that chose windowed mode while floating
     // re-tiles as a regular column.
     bool m_refullscreenOnTile = false;
-    // Set while an unfullscreen configure with size 0x0 is in flight: the layout must not impose the column size until
-    // the client commits its non-fullscreen state (or re-requests fullscreen, avoiding any resize).
-    bool m_pendingUnfullscreenSize = false;
-    // 0 until the first frame tick after arming; the grace deadline counts
-    // from there so a stalled frame clock cannot expire it instantly.
-    uint64_t m_unfullscreenGraceStartMsec = 0;
     // Inactive client unfullscreen requests wait briefly for xdg or foreign activation. Any later client request or
     // compositor-driven fullscreen change clears the parked request.
     DeferredUnfullscreen m_deferredUnfullscreen;
-    // Geometry at unfullscreen time; a commit with a different geometry means
-    // the client accepted windowed mode and the grace can end early.
-    wlr_box m_unfullscreenGeometry{};
     bool m_onActiveWorkspace = false;
     bool m_scratchpadBorder = false;
     bool m_urgent = false;

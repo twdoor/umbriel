@@ -28,13 +28,24 @@ UMBRIEL_TEST(aFirstLoadReportsEverything) {
   CHECK(change.appearance);
   CHECK(change.animation);
   CHECK(change.colors);
+  CHECK(change.drm);
   CHECK(change.events);
   CHECK(change.input);
   CHECK(change.outputs);
+  CHECK(change.scratchpads);
 }
 
 UMBRIEL_TEST(eachSectionIsReportedOnItsOwn) {
   const Config before;
+
+  {
+    Config after;
+    after.drm.ignoredPciAddresses.emplace_back("0000:01:00.0");
+    const ConfigChange change = ConfigChange::between(before, after);
+    CHECK(change.drm);
+    CHECK(!ConfigEffects::between(before, after).any());
+    CHECK_EQ(change.summary(), std::string("drm"));
+  }
 
   {
     Config after;
@@ -240,6 +251,13 @@ UMBRIEL_TEST(listSectionsAreCompared) {
     Config after;
     after.securityContextRules.push_back(SecurityContextRule{});
     CHECK(ConfigChange::between(before, after).securityContextRules);
+  }
+  {
+    Config after;
+    after.scratchpads.push_back({.name = "term"});
+    const ConfigChange change = ConfigChange::between(before, after);
+    CHECK(change.scratchpads);
+    CHECK_EQ(change.summary(), std::string("scratchpads"));
   }
 }
 
@@ -484,6 +502,23 @@ UMBRIEL_TEST(outputScrollingDefaultOnlyRefreshesWorkspaceLayout) {
   CHECK(!effects.overviewPresentation);
   CHECK(!effects.internalUi);
   CHECK(effects.invalidatesOverview());
+  CHECK_EQ(effects.summary(), std::string("workspace layout"));
+}
+
+UMBRIEL_TEST(outputWorkspaceAxisOnlyRefreshesWorkspaceLayout) {
+  Config before;
+  OutputRule output;
+  output.name = "HEADLESS-1";
+  before.outputs.push_back(output);
+
+  Config after = before;
+  after.outputs[0].workspaceAxis = umbriel::WorkspaceAxis::Horizontal;
+
+  const ConfigEffects effects = ConfigEffects::between(before, after);
+  CHECK(effects.workspaceLayout);
+  CHECK(effects.invalidatesOverview());
+  CHECK(!effects.outputState);
+  CHECK(!effects.workspaceInventory);
   CHECK_EQ(effects.summary(), std::string("workspace layout"));
 }
 

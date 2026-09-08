@@ -13,6 +13,10 @@ removed. Pass `umbriel -c <path>` to pin one exact path instead of using the
 lookup chain. A missing or invalid pinned path never falls back to an implicit
 candidate. Umbriel does not create or modify a user config automatically.
 
+At startup, a missing explicit `-c` path, syntax errors, unreadable files, and
+invalid include directives are fatal. Other invalid settings fall back to
+defaults unless `[drm]` is configured.
+
 ## Starting configuration
 
 The packaged starting configuration is
@@ -34,6 +38,11 @@ do later saves. No logout or restart is needed. If a reload fails, Umbriel
 keeps your last working configuration and continues watching the failed
 candidate and its included files. Save a corrected file to try the reload
 again. Options that require a restart are marked in their reference tables.
+
+A successful reload keeps the current keyboard focus when its window or
+keyboard-interactive layer remains mapped, visible, and on an enabled output.
+If that owner is no longer usable, Umbriel selects the active workspace on the
+pointer output instead.
 
 ## Diagnostics
 
@@ -66,16 +75,20 @@ Paths are resolved relative to the file that declares them. `~` and `~/`
 expand to the user's home directory. `$VAR` and `${VAR}` expand environment
 variables.
 
-Missing files in `[include.optional]` are silently ignored and remain watched.
-Creating one applies it without a restart. An optional file that exists must
-contain valid TOML.
+Missing files in `[include.optional]` are silently ignored and remain watched
+unless the main file declares `[drm]`. Creating a non-DRM optional file applies
+it without a restart. An optional file that exists must contain valid TOML.
 
 Files in `[include]` are applied in list order, followed by files in
 `[include.optional]`. Values in the including file override every include.
 
 `[include]` accepts `files` and the `optional` sub-table.
-`[include.optional]` accepts only `files`. Anything else is reported as an
-unknown key, in the main config and in included files alike.
+`[include.optional]` accepts only `files`. Unknown keys and invalid types reject
+both main and included configurations.
+
+If an included file defines `[drm]`, add an empty `[drm]` table to the main
+file. Umbriel then rejects a missing required or optional include instead of
+applying an incomplete exclusion list.
 
 You can split your config into multiple files for clarity:
 
@@ -119,6 +132,44 @@ honor_restored_maximize = false
 | `focus_on_activate`       | bool         | `false`                 | Let unsolicited activation requests add focus and reveal their target. When false, a mapped target is only marked urgent, while an unmapped target still follows its normal `default_focused` map policy. Tokens issued by `spawn:` and client tokens validated from focused input represent user launch intent and may focus the target. Window rules override this per application. |
 | `honor_restored_maximize` | bool         | `false`                 | Honor maximized state requested by applications before their first buffer maps. The first visible configure then uses the final maximized layout target. A request sent after mapping is a normal runtime maximize request and can resize an already visible window. Later maximize requests are always honored. Applies to newly opened windows. |
 
+## DRM devices
+
+Use the optional `[drm]` section to keep GPUs unopened in a native session.
+Omit it to retain automatic GPU discovery. Changes require a restart.
+
+```toml
+[drm]
+ignored_pci_addresses = ["0000:01:00.0"]
+# Alternative using a stable DRM path:
+# ignored_devices = ["/dev/dri/by-path/pci-0000:01:00.0-card"]
+```
+
+| Key                     | Type         | Default | Description |
+| ----------------------- | ------------ | ------- | ----------- |
+| `ignored_devices`       | string array | `[]`    | Absolute DRM card or render-node paths that resolve at startup. Either node excludes the whole GPU. |
+| `ignored_pci_addresses` | string array | `[]`    | PCI addresses in `domain:bus:slot.function` form. Use this when the GPU may start bound to `vfio-pci`. |
+
+Prefer stable `/dev/dri/by-path` links over numbered `cardN` and `renderDN`
+paths. Each path resolves once at startup and pins that GPU for the session,
+even if the path disappears, changes target, or gets reused. Startup rejects
+unresolved paths with guidance to use `ignored_pci_addresses` instead.
+
+Umbriel does not bind or unbind PCI drivers. Configure libvirt with managed
+host devices, or use equivalent host tooling, for that lifecycle.
+
+### Limits
+
+- The section has no effect on nested Wayland, X11, or headless backends.
+- A native session fails to start if the build lacks the wlroots DRM backend or libudev.
+- Startup fails if no allowed GPU works. Losing the primary GPU ends the session.
+- Secondary GPUs must support the primary GPU's DMA-BUF format and modifiers.
+- `WLR_RENDERER_FORCE_SOFTWARE=1` is incompatible with exclusions.
+- Exclusions override `WLR_DRM_DEVICES` and `WLR_RENDER_DRM_DEVICE`.
+- With exclusions, `WLR_BACKENDS` supports only `drm` and optional `libinput`.
+
+See [DRM GPU exclusion](../design/drm-device-policy.md) for the backend and
+renderer design.
+
 ## Environment
 
 ```toml
@@ -158,6 +209,46 @@ lid_open = "notify-send 'The laptop lid is open!'"
 ```
 
 Defines commands that are executed when the laptop lid is closed or opened.
+
+## Scratchpads
+
+With no `[[scratchpad]]` entries, Umbriel provides one implicit scratchpad
+named `default`. Bare scratchpad actions select it:
+
+```toml
+[keybinds]
+"Mod+Shift+Space" = "window-move-to-scratchpad"
+"Mod+Space" = "scratchpad-toggle"
+```
+
+To use multiple scratchpads, define each name and include that name in every
+scratchpad action:
+
+```toml
+[[scratchpad]]
+name = "terminal"
+
+[[scratchpad]]
+name = "music"
+
+[keybinds]
+"Mod+Shift+Space" = "window-toggle-scratchpad:terminal"
+"Mod+Space" = "scratchpad-toggle:terminal"
+"Mod+Shift+M" = "window-toggle-scratchpad:music"
+"Mod+M" = "scratchpad-toggle:music"
+```
+
+Defining any named scratchpad removes the implicit `default` scratchpad, so
+bare scratchpad actions are invalid in named mode. Names must be nonempty and
+unique. The name `default` is reserved and cannot appear in a
+`[[scratchpad]]` entry.
+
+Scratchpads are global and roam between outputs. Each stored window keeps its
+own restore output and workspace. Removing a scratchpad definition during a
+config reload restores its windows to those saved destinations.
+
+See [Scratchpads](scratchpad.md) for action behavior, focus, dragging, and
+multi-output details.
 
 ## Idle inhibition
 

@@ -44,8 +44,8 @@ To understand the values and philosophy guiding the project, read our [ethos](ht
   mouse-driven resizing and tiled reordering
 - Independent workspaces per output, with hotplug support and configurable modes, positions, scales, and transforms
 - Floating, pinned, and fullscreen windows with configurable placement, focus, sizing, opacity, and visual effects
-- [Per-output scratchpads](docs/user/scratchpad.md) for temporarily hiding
-  windows, with toggle, move, restore, and focus-next actions
+- [Global named scratchpads](docs/user/scratchpad.md) for temporarily hiding
+  window groups and summoning them on any output
 - An animated overview, directional focus, configurable keybinds, submaps, and activation policy
 - Blur, shadows, rounded corners, double borders, opacity, and animated position, size, and fade transitions
 - Keyboard, pointer, touch, touchpad gestures, XKB configuration, and text-input-v3/input-method-v2 input method support
@@ -68,7 +68,7 @@ The scene graph and renderer live in [`umbrielfx/`](umbrielfx/) and build as par
 
 Install a C++23 compiler, Meson, Ninja, pkg-config, wayland-scanner, and development packages for wlroots 0.20
 (0.20.1 or newer), Wayland, xkbcommon, libinput, pixman, libdrm, EGL, GLES2, GBM, lcms2, Cairo, Pango, tomlplusplus,
-and nlohmann-json. Then build Umbriel:
+and nlohmann-json. Native `[drm]` GPU exclusions also require libudev. Then build Umbriel:
 
 ```sh
 just release

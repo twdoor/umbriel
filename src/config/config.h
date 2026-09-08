@@ -22,6 +22,13 @@ namespace umbriel {
   inline constexpr size_t kMaxWorkspaces = 64;
   struct ConfigReloadResult;
 
+  // Direction along which an output's workspaces are arranged. Scrolling layouts
+  // always scroll perpendicular to it.
+  enum class WorkspaceAxis {
+    Vertical,
+    Horizontal,
+  };
+
   enum class ModifierKey {
     Super,
     Alt,
@@ -50,7 +57,6 @@ namespace umbriel {
       std::optional<double> defaultWidthFraction;
       std::optional<bool> centerUnderfullStrip;
       std::optional<bool> centerFocused;
-      std::optional<ScrollingDirection> direction;
       std::optional<bool> expandSingleColumn;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
@@ -75,6 +81,13 @@ namespace umbriel {
     std::optional<int> index; // optional 1-based position selector
     WorkspaceLayoutOverrides layout;
     bool operator==(const WorkspaceConfig&) const = default;
+  };
+
+  // A user-defined scratchpad. An empty list means that Umbriel provides the
+  // implicit scratchpad named "default" instead.
+  struct ScratchpadConfig {
+    std::string name;
+    bool operator==(const ScratchpadConfig&) const = default;
   };
 
   // Fully resolved layout config. Owned by each Workspace.
@@ -203,6 +216,9 @@ namespace umbriel {
     // Smallest workspace count a dynamic output keeps. Rejected alongside an
     // explicit inventory, which already states an exact count.
     int minWorkspaces = 1;
+    // Direction this output's workspaces are arranged along. Scrolling layouts on
+    // it scroll perpendicular to this.
+    WorkspaceAxis workspaceAxis = WorkspaceAxis::Vertical;
     struct Layout {
       struct Scrolling {
         // Initial strip-axis extent inherited by workspaces on this output.
@@ -597,7 +613,6 @@ namespace umbriel {
         std::optional<double> defaultWidthFraction;
         bool centerUnderfullStrip = true;
         bool centerFocused = false;
-        ScrollingDirection direction = ScrollingDirection::Horizontal;
         bool expandSingleColumn = false;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
@@ -641,6 +656,16 @@ namespace umbriel {
       bool honorRestoredMaximize = false;
       bool operator==(const General&) const = default;
     } general;
+
+    struct Drm {
+      // Absolute card or render-node paths. Either node excludes the whole GPU.
+      std::vector<std::string> ignoredDevices;
+      // Canonical PCI domain:bus:slot.function addresses.
+      std::vector<std::string> ignoredPciAddresses;
+
+      [[nodiscard]] bool configured() const { return !ignoredDevices.empty() || !ignoredPciAddresses.empty(); }
+      bool operator==(const Drm&) const = default;
+    } drm;
 
     struct Environment {
       // Ordered NAME=value pairs exported to the compositor and the native session's systemd user manager.
@@ -761,6 +786,7 @@ namespace umbriel {
     std::vector<WindowRule> windowRules;
     std::vector<LayerRule> layerRules;
     std::vector<SecurityContextRule> securityContextRules;
+    std::vector<ScratchpadConfig> scratchpads;   // [[scratchpad]] definitions
     std::vector<WorkspaceConfig> workspaceRules; // [[workspace]] layout rules
 
     // True when any surface may sample the cached background blur, so every
@@ -786,7 +812,7 @@ namespace umbriel {
   };
 
   [[nodiscard]] const Config& config();
-  void loadConfig(const char* explicitPath);
+  [[nodiscard]] bool loadConfig(const char* explicitPath);
   [[nodiscard]] ConfigReloadResult reloadConfig();
   [[nodiscard]] const std::vector<std::filesystem::path>& configWatchPaths();
   [[nodiscard]] const std::vector<ConfigDiagnostic>& configDiagnostics();

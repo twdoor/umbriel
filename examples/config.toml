@@ -40,6 +40,14 @@ show_cheatsheet = true                          # Show the keybind overlay on st
 focus_on_activate = false                       # Do not let unsolicited requests steal focus
 honor_restored_maximize = false                 # Honor restored maximized state
 
+# Native GPU exclusions
+# Changes require a restart. Use a PCI address if the GPU may start bound to vfio-pci.
+# Device paths must resolve at startup or Umbriel refuses to start.
+# Documentation: https://docs.noctalia.dev/umbriel/configuration/#drm-devices
+# [drm]
+# ignored_devices = ["/dev/dri/by-path/pci-0000:01:00.0-card"]
+# ignored_pci_addresses = ["0000:01:00.0"]
+
 # Session environment
 # Values apply only at session startup. Native sessions also publish them to
 # newly started systemd user services. Add or uncomment values as needed.
@@ -82,6 +90,7 @@ honor_restored_maximize = false                 # Honor restored maximized state
 # hdr = "auto"                                  # off, on, auto, or fullscreen
 # sdr_white = 203                               # SDR reference white in cd/m2 during HDR
 # workspaces = 5                                # Omit for dynamic workspaces
+# workspace_axis = "horizontal"                 # vertical or horizontal workspace arrangement
 
 # Replace the count with ["WEB", "CHAT", "MEDIA"] for named static workspaces,
 # or with "dynamic" to state the dynamic default explicitly. A dynamic output
@@ -278,6 +287,20 @@ follows_mouse = false                           # Focus the pointer target after
 # scroll_button = "MouseBack"
 # scroll_button_lock = false
 
+# ────────────────────────────── Scratchpads ─────────────────────────────────
+# With no entries below, Umbriel creates one implicit scratchpad named
+# `default`, and bare scratchpad actions select it. Defining any named
+# scratchpad disables that implicit default and requires a name suffix on every
+# scratchpad action. Names must be unique, and `default` is reserved.
+# Documentation: https://docs.noctalia.dev/umbriel/scratchpads/
+# ────────────────────────────────────────────────────────────────────────────
+
+# [[scratchpad]]
+# name = "terminal"
+
+# [[scratchpad]]
+# name = "music"
+
 # ─────────────────────────────── Keybinds ───────────────────────────────────
 # Bind chords to compositor actions. Configured chords replace matching
 # built-ins; built-in chords not mentioned here remain active.
@@ -323,7 +346,7 @@ follows_mouse = false                           # Focus the pointer target after
 # "Mod+Shift+Down" = "window-move-down"
 # "Mod+Shift+Up" = "window-move-up"
 # "Mod+Shift+Right" = "column-move-right"
-# "Mod+F" = "window-toggle-fullscreen"
+# "Mod+F" = "window-toggle-fullscreen"           # Exit restores the previous layout size immediately
 # "Mod+Ctrl+F" = "window-toggle-maximize"
 # "Mod+R" = "window-cycle-width"
 # "Mod+Shift+R" = "window-cycle-width-back"
@@ -335,13 +358,28 @@ follows_mouse = false                           # Focus the pointer target after
 # keypad digits provide the same built-in actions.
 
 # Scratchpads
-# Each output owns a separate scratchpad. Bare actions target the output under
-# the pointer; append `:DP-1` or a monitor Config name to target one explicitly.
+# These bare actions use the implicit `default` scratchpad because no named
+# definitions are active above. A scratchpad is global: toggling it summons all
+# its windows to the output under the pointer. Only outputs with a visible
+# scratchpad receive its dim and blur backdrop.
+# Resize, maximize, fullscreen, and close actions target a scratchpad that owns
+# keyboard focus. Layout-relative window actions leave the workspace behind it
+# unchanged.
 # Documentation: https://docs.noctalia.dev/umbriel/scratchpads/
 "Mod+Shift+Space" = "window-move-to-scratchpad"
 "Mod+Space" = "scratchpad-toggle"
 "Mod+Ctrl+Space" = "window-restore-from-scratchpad"
 "Mod+Tab" = "scratchpad-focus-next"
+
+# Named mode recipe: uncomment the definitions above, then replace the four
+# action values with named forms such as these. Every scratchpad action needs a
+# configured name once named mode is active.
+# "Mod+Shift+Space" = "window-move-to-scratchpad:terminal"
+# "Mod+Space" = "scratchpad-toggle:terminal"
+# "Mod+Ctrl+Space" = "window-restore-from-scratchpad:terminal"
+# "Mod+Tab" = "scratchpad-focus-next:terminal"
+# "Mod+Ctrl+Shift+M" = "window-toggle-scratchpad:music"
+# "Mod+Ctrl+M" = "scratchpad-toggle:music"
 
 # Optional navigation and sizing recipes. These chords do not replace active
 # bindings above when uncommented.
@@ -418,7 +456,7 @@ top = 0
 bottom = 0
 
 [layout.scrolling]
-# direction = "horizontal"                      # horizontal or vertical strip axis
+# The strip axis is perpendicular to the output's workspace_axis.
 default_width_fraction = 0.5                    # Initial width for new columns, 0.1-1.0
 center_underfull_strip = true                   # Center a strip narrower than the viewport
 center_focused = false                          # Always center the focused column
@@ -597,7 +635,8 @@ curve = "easeout"
 style = "fade"                                  # fade or slide
 # shader = "shaders/reveal.glsl"
 
-# Window movement, resizing, and floating maximize
+# Window movement, resizing, and floating maximize. Visible scratchpad keybind
+# resizing uses this event too.
 [animation.windows_move]
 enabled = true
 duration_ms = 250

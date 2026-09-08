@@ -126,6 +126,19 @@ assert that directional output actions are rejected when there is nowhere to mov
 A check that stops making progress is killed after 120 seconds, so the suite reports instead of hanging. Set
 `CHECK_TIMEOUT` to change the cap, and `CHECK_VERBOSE=1` (or `-v`) to keep the full output of passing checks.
 
+## Releases
+
+`VERSION` is the canonical build version and Meson reads it directly. A release remains an explicit tag push: after
+the version bump is committed to the intended release commit, create and push the matching tag:
+
+```sh
+git tag -a "v$(<VERSION)" -m "Umbriel $(<VERSION)"
+git push origin "v$(<VERSION)"
+```
+
+The release workflow runs only for `v*` tags. It rejects a tag that does not exactly match `VERSION` at its target and
+creates the GitHub release when one does not already exist. It never creates or moves tags.
+
 ## Code Style
 
 This project uses [clang-format](https://clang.llvm.org/docs/ClangFormat.html) for formatting, with the same
@@ -254,6 +267,18 @@ Its regressions run in their own suite:
 ```sh
 meson test -C build-release --suite umbrielfx
 ```
+
+On a dedicated test machine, pass the render nodes to the renderer ownership
+check. Without arguments, it reports a skip:
+
+```sh
+build-release/umbrielfx/umbrielfx-renderer-test /dev/dri/renderD128 /dev/dri/renderD129
+```
+
+Every selected node must open and initialize or the test fails. The EGL and
+scene ABI checks need no GPU access. The compositor's `backend-manager` test
+checks native startup and hotplug filtering with simulated device I/O, without
+taking control of a seat.
 
 ## Debugging
 

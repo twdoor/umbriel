@@ -15,6 +15,7 @@
 #include "scene/cheatsheet.h"
 #include "scene/hint_rect.h"
 #include "scene/quit_confirm.h"
+#include "server/backend_manager.h"
 #include "server/ipc.h"
 #include "server/server.h"
 #include "view/popup.h"
@@ -463,6 +464,17 @@ namespace umbriel {
     if (!effects.any()) {
       return;
     }
+    // Settle every interaction whose meaning depends on the workspace axis or the
+    // layout objects about to be replaced, while those still exist.
+    if (effects.workspaceLayout || effects.workspaceInventory || effects.outputState) {
+      m_cursor->cancelLayoutInteraction();
+      m_gestures->cancelForLayoutChange();
+      for (const auto& output : m_outputs) {
+        if (WorkspaceGroup* group = output->workspaceGroup()) {
+          group->slideFinish();
+        }
+      }
+    }
     if (effects.animation) {
       prepareAnimationShaders(m_renderer);
     }
@@ -583,10 +595,18 @@ namespace umbriel {
     cancelModifierTap();
     const ConfigReloadResult result = reloadConfig();
     if (result.success) {
+      if (result.change.drm) {
+        kLog.warn("DRM configuration changed; restart Umbriel to apply it");
+      }
       if (result.change.keybinds) {
         m_bindCooldowns.clear();
       }
+      if (result.change.scratchpads && m_scratchpadManager != nullptr) {
+        m_scratchpadManager->reconcileConfig();
+      }
       if (result.effects.invalidatesOverview()) {
+        // A four-finger gesture must not reopen a presentation this close invalidates.
+        m_gestures->cancelForLayoutChange();
         m_overview->forceClose();
       }
       applyConfig(result.effects);
@@ -659,7 +679,7 @@ namespace umbriel {
     wlr_renderer* oldRenderer = m_renderer;
     wlr_allocator* oldAllocator = m_allocator;
 
-    wlr_renderer* newRenderer = fx_renderer_create(m_backend);
+    wlr_renderer* newRenderer = m_backendManager->createRenderer();
     if (newRenderer == nullptr) {
       kLog.error("could not recreate fx_renderer after GPU reset, terminating");
       stop();
@@ -669,6 +689,13 @@ namespace umbriel {
     if (newAllocator == nullptr) {
       kLog.error("could not recreate allocator after GPU reset, terminating");
       wlr_renderer_destroy(newRenderer);
+      stop();
+      return;
+    }
+    if (!m_backendManager->verifyOpenDevices("after renderer recovery")) {
+      wlr_allocator_destroy(newAllocator);
+      wlr_renderer_destroy(newRenderer);
+      kLog.error("renderer recovery opened an excluded GPU, terminating");
       stop();
       return;
     }

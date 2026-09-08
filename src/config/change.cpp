@@ -70,7 +70,7 @@ namespace umbriel {
       static const OutputRule defaults;
       const OutputRule& lhs = before != nullptr ? *before : defaults;
       const OutputRule& rhs = after != nullptr ? *after : defaults;
-      return lhs.layout == rhs.layout;
+      return lhs.layout == rhs.layout && lhs.workspaceAxis == rhs.workspaceAxis;
     }
 
     bool sameWindowTearingPolicy(const Config& before, const Config& after) {
@@ -183,6 +183,7 @@ namespace umbriel {
         .layout = true,
         .workspaces = true,
         .general = true,
+        .drm = true,
         .environment = true,
         .events = true,
         .input = true,
@@ -191,6 +192,7 @@ namespace umbriel {
         .windowRules = true,
         .layerRules = true,
         .securityContextRules = true,
+        .scratchpads = true,
         .workspaceRules = true,
     };
   }
@@ -205,6 +207,7 @@ namespace umbriel {
         .layout = before.layout != after.layout,
         .workspaces = before.workspaces != after.workspaces,
         .general = before.general != after.general,
+        .drm = before.drm != after.drm,
         .environment = before.environment != after.environment,
         .events = before.events != after.events,
         .input = before.input != after.input,
@@ -213,6 +216,7 @@ namespace umbriel {
         .windowRules = before.windowRules != after.windowRules,
         .layerRules = before.layerRules != after.layerRules,
         .securityContextRules = before.securityContextRules != after.securityContextRules,
+        .scratchpads = before.scratchpads != after.scratchpads,
         .workspaceRules = before.workspaceRules != after.workspaceRules,
     };
   }
@@ -236,6 +240,7 @@ namespace umbriel {
     add(layout, "layout");
     add(workspaces, "workspaces");
     add(general, "general");
+    add(drm, "drm");
     add(environment, "environment");
     add(events, "events");
     add(input, "input");
@@ -244,6 +249,7 @@ namespace umbriel {
     add(windowRules, "window rules");
     add(layerRules, "layer rules");
     add(securityContextRules, "security context rules");
+    add(scratchpads, "scratchpads");
     add(workspaceRules, "workspace rules");
     return out;
   }
