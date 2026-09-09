@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace umbriel {
@@ -56,8 +57,7 @@ namespace umbriel {
     struct Scrolling {
       std::optional<double> defaultWidthFraction;
       std::optional<bool> centerUnderfullStrip;
-      std::optional<bool> centerFocused;
-      std::optional<bool> expandSingleColumn;
+      std::optional<CenterFocusedColumn> centerFocused;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
     struct Dwindle {
@@ -90,6 +90,10 @@ namespace umbriel {
     bool operator==(const ScratchpadConfig&) const = default;
   };
 
+  // A workspace position or an exact workspace name. TOML integers select by
+  // position, while TOML strings select by name even when they contain digits.
+  using WorkspaceTarget = std::variant<int, std::string>;
+
   // Fully resolved layout config. Owned by each Workspace.
   struct ResolvedLayoutConfig {
     LayoutMode mode = LayoutMode::Scrolling;
@@ -99,10 +103,9 @@ namespace umbriel {
     struct Scrolling {
       std::optional<double> defaultWidthFraction;
       bool centerUnderfullStrip = true;
-      bool centerFocused = false;
+      CenterFocusedColumn centerFocused = CenterFocusedColumn::Never;
       // Axis-agnostic layout state is preserved when config reload changes direction.
       ScrollingDirection direction = ScrollingDirection::Horizontal;
-      bool expandSingleColumn = false;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
     struct Dwindle {
@@ -270,6 +273,18 @@ namespace umbriel {
     return "none";
   }
 
+  // Window state the `match.is_*` selectors test. Every field is a live
+  // property, so a change to any of them re-selects a window's rules.
+  struct WindowRuleState {
+    bool focused = false;
+    bool floating = false;
+    bool pinned = false;
+    bool scratchpad = false;
+    bool alone = false;
+
+    [[nodiscard]] bool operator==(const WindowRuleState& other) const = default;
+  };
+
   struct WindowRule {
     std::string appIdPattern;
     std::string titlePattern;
@@ -279,6 +294,10 @@ namespace umbriel {
     std::regex xdgTagRegex;
     std::optional<ContentType> matchContentType;
     std::optional<bool> matchFocused;
+    std::optional<bool> matchFloating;
+    std::optional<bool> matchPinned;
+    std::optional<bool> matchScratchpad;
+    std::optional<bool> matchAlone;
     std::optional<bool> matchAtStartup;
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
@@ -286,7 +305,7 @@ namespace umbriel {
     std::optional<WindowPosition> defaultPosition;
     std::optional<double> defaultWidth;  // column width fraction override
     std::optional<double> defaultHeight; // floating height fraction of the usable area
-    std::optional<int> defaultWorkspace; // 1-64
+    std::optional<WorkspaceTarget> defaultWorkspace;
     std::optional<std::string> defaultScrollingColumn;
     std::optional<int> defaultScrollingColumnOrder;
     std::optional<bool> defaultFullscreen;
@@ -314,6 +333,10 @@ namespace umbriel {
           && xdgTagPattern == other.xdgTagPattern
           && matchContentType == other.matchContentType
           && matchFocused == other.matchFocused
+          && matchFloating == other.matchFloating
+          && matchPinned == other.matchPinned
+          && matchScratchpad == other.matchScratchpad
+          && matchAlone == other.matchAlone
           && matchAtStartup == other.matchAtStartup
           && defaultOutput == other.defaultOutput
           && defaultFloating == other.defaultFloating
@@ -349,7 +372,7 @@ namespace umbriel {
     std::optional<WindowPosition> defaultPosition;
     std::optional<double> defaultWidth;
     std::optional<double> defaultHeight;
-    std::optional<int> defaultWorkspace;
+    std::optional<WorkspaceTarget> defaultWorkspace;
     std::optional<std::string> defaultScrollingColumn;
     std::optional<int> defaultScrollingColumnOrder;
     std::optional<bool> defaultFullscreen;
@@ -612,8 +635,7 @@ namespace umbriel {
       struct Scrolling {
         std::optional<double> defaultWidthFraction;
         bool centerUnderfullStrip = true;
-        bool centerFocused = false;
-        bool expandSingleColumn = false;
+        CenterFocusedColumn centerFocused = CenterFocusedColumn::Never;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
       struct Dwindle {

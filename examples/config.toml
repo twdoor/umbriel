@@ -16,7 +16,9 @@
 # Split large configurations into smaller files. Required files are applied in
 # list order, followed by optional files, then values in this main file.
 # Missing optional files are silently ignored and remain watched. Relative
-# paths start from the directory containing this file.
+# paths start from the directory containing this file. Rule lists such as
+# [[window_rule]] collect entries from every file; any other value is replaced
+# by the last file that sets it.
 # Documentation: https://docs.noctalia.dev/umbriel/configuration/#include
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -302,8 +304,8 @@ follows_mouse = false                           # Focus the pointer target after
 # name = "music"
 
 # ─────────────────────────────── Keybinds ───────────────────────────────────
-# Bind chords to compositor actions. Configured chords replace matching
-# built-ins; built-in chords not mentioned here remain active.
+# Bind chords to compositor actions. A configuration file replaces the built-in
+# keybind set, so define every chord that should remain available.
 # Syntax: https://docs.noctalia.dev/umbriel/keybinds/
 # Actions: https://docs.noctalia.dev/umbriel/actions/
 # ────────────────────────────────────────────────────────────────────────────
@@ -332,30 +334,45 @@ follows_mouse = false                           # Focus the pointer target after
 # Overview
 "Mod+O" = { action = "overview-toggle", repeat = false }
 
-# These useful bindings are built in already. They stay commented here so an
-# included keybind file can override them without this main file winning again.
-# Uncomment a chord only when this file should own that override.
+# Common keybinds
+"Mod+Escape" = "session-quit"
+"Mod+F1" = "window-focus-next"
+"Mod+H" = "window-focus-left"
+"Mod+J" = "window-focus-down"
+"Mod+K" = "window-focus-up"
+"Mod+L" = "window-focus-right"
+"Mod+Shift+Left" = "column-move-left"
+"Mod+Shift+Down" = "window-move-down"
+"Mod+Shift+Up" = "window-move-up"
+"Mod+Shift+Right" = "column-move-right"
+"Mod+F" = "window-toggle-fullscreen"             # Exit restores the previous layout size immediately
+"Mod+Ctrl+F" = "window-toggle-maximize"
+"Mod+R" = "window-cycle-width"
+"Mod+Shift+R" = "window-cycle-width-back"
+"Mod+Comma" = "window-consume-left"
+"Mod+Period" = "window-consume-right"
+"Mod+WheelUp" = "window-focus-left"
+"Mod+WheelDown" = "window-focus-right"
 
-# "Mod+Escape" = "session-quit"
-# "Mod+F1" = "window-focus-next"
-# "Mod+H" = "window-focus-left"
-# "Mod+J" = "window-focus-down"
-# "Mod+K" = "window-focus-up"
-# "Mod+L" = "window-focus-right"
-# "Mod+Shift+Left" = "column-move-left"
-# "Mod+Shift+Down" = "window-move-down"
-# "Mod+Shift+Up" = "window-move-up"
-# "Mod+Shift+Right" = "column-move-right"
-# "Mod+F" = "window-toggle-fullscreen"           # Exit restores the previous layout size immediately
-# "Mod+Ctrl+F" = "window-toggle-maximize"
-# "Mod+R" = "window-cycle-width"
-# "Mod+Shift+R" = "window-cycle-width-back"
-# "Mod+Comma" = "window-consume-left"
-# "Mod+Period" = "window-consume-right"
-# "Mod+WheelUp" = "window-focus-left"
-# "Mod+WheelDown" = "window-focus-right"
-# Mod+1 through Mod+9 switch workspaces. Adding Shift moves the focused window;
-# keypad digits provide the same built-in actions.
+# Workspaces
+"Mod+1" = "workspace-switch:1"
+"Mod+2" = "workspace-switch:2"
+"Mod+3" = "workspace-switch:3"
+"Mod+4" = "workspace-switch:4"
+"Mod+5" = "workspace-switch:5"
+"Mod+6" = "workspace-switch:6"
+"Mod+7" = "workspace-switch:7"
+"Mod+8" = "workspace-switch:8"
+"Mod+9" = "workspace-switch:9"
+"Mod+Shift+1" = "window-move-to-workspace:1"
+"Mod+Shift+2" = "window-move-to-workspace:2"
+"Mod+Shift+3" = "window-move-to-workspace:3"
+"Mod+Shift+4" = "window-move-to-workspace:4"
+"Mod+Shift+5" = "window-move-to-workspace:5"
+"Mod+Shift+6" = "window-move-to-workspace:6"
+"Mod+Shift+7" = "window-move-to-workspace:7"
+"Mod+Shift+8" = "window-move-to-workspace:8"
+"Mod+Shift+9" = "window-move-to-workspace:9"
 
 # Scratchpads
 # These bare actions use the implicit `default` scratchpad because no named
@@ -459,8 +476,7 @@ bottom = 0
 # The strip axis is perpendicular to the output's workspace_axis.
 default_width_fraction = 0.5                    # Initial width for new columns, 0.1-1.0
 center_underfull_strip = true                   # Center a strip narrower than the viewport
-center_focused = false                          # Always center the focused column
-expand_single_column = true                     # Let a lone column fill the viewport
+center_focused = "never"                        # never, always, or on_overflow
 
 [layout.dwindle]
 # preserve_split = false                        # Keep every split direction fixed after creation
@@ -509,12 +525,26 @@ default_position = { x = 0, y = 0, anchor = "bottom_right" }
 default_focused = false
 default_pinned = true
 
-# Optional placement recipe. Output names follow the same rules as [output.*].
+# Optional positional placement recipe. Output names follow the same rules as
+# [output.*]. `default_output` scopes the workspace lookup to that output, and
+# integer workspace selectors are 1-based positions.
+
+# [[window_rule]]
+# match.app_id = "^org[.]example[.]Editor$"
+# default_output = "DP-1"
+# default_workspace = 2
+# default_focused = false
+
+# A string workspace selector is an exact, case-sensitive name, so `"2"`
+# selects the workspace named `"2"` instead of position 2. The workspace must
+# already exist, usually in a static inventory such as
+# `workspaces = ["WEB", "CHAT"]`. This rule does not create CHAT or add a named
+# workspace to a dynamic output.
 
 # [[window_rule]]
 # match.app_id = "^org[.]example[.]Chat$"
 # default_output = "DP-1"
-# default_workspace = 2
+# default_workspace = "CHAT"
 # default_focused = false
 
 # Open an application maximized while keeping its parented dialogs natural-sized.
@@ -580,7 +610,8 @@ default_pinned = true
 # default_scrolling_column = "browsers"
 # default_scrolling_column_order = 10
 
-# Focus-aware rules update as focus changes.
+# State-aware rules update as focus, floating, pinned, and scratchpad state
+# change. Pinned and scratchpad windows are floating too.
 
 # [[window_rule]]
 # match.is_focused = false
@@ -589,6 +620,21 @@ default_pinned = true
 # [[window_rule]]
 # match.is_focused = true
 # opacity = 1.0
+
+# [[window_rule]]
+# match.is_floating = true
+# match.is_scratchpad = false
+# blur = false
+
+# Fill the viewport for a workspace's lone tiled column.
+# [[window_rule]]
+# match.is_alone = true
+# default_maximize = true
+
+# 75% width when the window is alone, the default width when another window opens.
+# [[window_rule]]
+# match.is_alone = true
+# default_width = 0.75
 
 # ────────────────────────────── Layer Rules ─────────────────────────────────
 # Match layer-shell surfaces such as panels, launchers, notifications, and

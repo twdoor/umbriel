@@ -12,6 +12,7 @@
 #include <string_view>
 #include <unistd.h>
 #include <utility>
+#include <variant>
 
 using umbriel::ConfigDiagnostic;
 using umbriel::ConfigStore;
@@ -652,23 +653,34 @@ layout.scrolling.direction = "vertical"
   CHECK(containsDiagnostic(store, "unknown key workspace[0].layout.scrolling.direction"));
 }
 
-UMBRIEL_TEST(expandSingleColumnParsesAndDefaultsToFalse) {
+UMBRIEL_TEST(centerFocusedReadsItsModeVocabulary) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
   store.setRootPath(file.path(), true);
 
-  file.write("");
+  file.write(R"(
+[layout.scrolling]
+center_focused = "on_overflow"
 
+[[workspace]]
+index = 1
+layout.scrolling.center_focused = "always"
+)");
   CHECK(store.reload().success);
-  CHECK(!store.config().layout.scrolling.expandSingleColumn);
+  CHECK(store.config().layout.scrolling.centerFocused == umbriel::CenterFocusedColumn::OnOverflow);
+  CHECK_EQ(store.config().workspaceRules.size(), size_t{1});
+  CHECK(store.config().workspaceRules[0].layout.scrolling.centerFocused == umbriel::CenterFocusedColumn::Always);
 
-  file.write("[layout.scrolling]\nexpand_single_column = true\n");
+  file.write("[layout.scrolling]\ncenter_focused = \"sometimes\"\n");
   CHECK(store.reload().success);
-  CHECK(store.config().layout.scrolling.expandSingleColumn);
+  CHECK(store.config().layout.scrolling.centerFocused == umbriel::CenterFocusedColumn::Never);
+  CHECK(containsDiagnostic(store, R"(unknown layout.scrolling.center_focused "sometimes")"));
+  CHECK(!containsDiagnostic(store, "unknown key layout.scrolling.center_focused"));
 
-  file.write("[layout.scrolling]\nexpand_single_column = false\n");
+  // The old boolean form is a hard error, not a silent fallback.
+  file.write("[layout.scrolling]\ncenter_focused = false\n");
   CHECK(store.reload().success);
-  CHECK(!store.config().layout.scrolling.expandSingleColumn);
+  CHECK(containsDiagnostic(store, "layout.scrolling.center_focused must be a string"));
 }
 
 UMBRIEL_TEST(modKeyIsUserConfigurable) {
@@ -1211,6 +1223,72 @@ UMBRIEL_TEST(windowOutputPoliciesLoadAndRejectInvalidValues) {
   CHECK(containsDiagnostic(store, "ignoring window_rule.hdr"));
 }
 
+UMBRIEL_TEST(windowRuleWorkspaceTargetPreservesIntegerAndStringSelectors) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[[window_rule]]\ndefault_workspace = 2\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  const auto& positionTarget = store.config().windowRules[0].defaultWorkspace;
+  const auto* position = positionTarget ? std::get_if<int>(&*positionTarget) : nullptr;
+  CHECK(position != nullptr);
+  CHECK(position != nullptr && *position == 2);
+  CHECK(!containsDiagnostic(store, "unknown key window_rule.default_workspace"));
+
+  file.write("[[window_rule]]\ndefault_workspace = 64\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  const auto& limitTarget = store.config().windowRules[0].defaultWorkspace;
+  const auto* limit = limitTarget ? std::get_if<int>(&*limitTarget) : nullptr;
+  CHECK(limit != nullptr);
+  CHECK(limit != nullptr && *limit == 64);
+
+  file.write("[[window_rule]]\ndefault_workspace = \"CHAT\"\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  const auto& nameTarget = store.config().windowRules[0].defaultWorkspace;
+  const auto* name = nameTarget ? std::get_if<std::string>(&*nameTarget) : nullptr;
+  CHECK(name != nullptr);
+  CHECK(name != nullptr && *name == "CHAT");
+
+  // A numeric-looking string remains a name. It must not silently become a
+  // positional selector during parsing.
+  file.write("[[window_rule]]\ndefault_workspace = \"2\"\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  const auto& numericNameTarget = store.config().windowRules[0].defaultWorkspace;
+  const auto* numericName = numericNameTarget ? std::get_if<std::string>(&*numericNameTarget) : nullptr;
+  CHECK(numericName != nullptr);
+  CHECK(numericName != nullptr && *numericName == "2");
+
+  file.write("[[window_rule]]\ndefault_workspace = \"\"\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(!store.config().windowRules[0].defaultWorkspace.has_value());
+  CHECK(containsDiagnostic(store, "ignoring window_rule.default_workspace"));
+  CHECK(!containsDiagnostic(store, "unknown key window_rule.default_workspace"));
+
+  file.write("[[window_rule]]\ndefault_workspace = false\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(!store.config().windowRules[0].defaultWorkspace.has_value());
+  CHECK(containsDiagnostic(store, "ignoring window_rule.default_workspace"));
+
+  file.write("[[window_rule]]\ndefault_workspace = 0\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(!store.config().windowRules[0].defaultWorkspace.has_value());
+  CHECK(containsDiagnostic(store, "ignoring window_rule.default_workspace"));
+
+  file.write("[[window_rule]]\ndefault_workspace = 65\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(!store.config().windowRules[0].defaultWorkspace.has_value());
+  CHECK(containsDiagnostic(store, "ignoring window_rule.default_workspace"));
+}
+
 UMBRIEL_TEST(securityContextRulesLoadAndKeepTheManagerBlocked) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
@@ -1339,6 +1417,32 @@ UMBRIEL_TEST(windowStartupMatcherLoadsBoolean) {
   CHECK(containsDiagnostic(store, "ignoring window_rule.match.at_startup (expected boolean)"));
   CHECK(!containsDiagnostic(store, "unknown key window_rule.match.is_focused"));
   CHECK(!containsDiagnostic(store, "unknown key window_rule.opacity"));
+}
+
+UMBRIEL_TEST(windowStateMatchersLoadBooleans) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write(
+      "[[window_rule]]\nmatch.is_floating = true\nmatch.is_pinned = false\nmatch.is_scratchpad = true\nopacity = "
+      "0.9\n"
+  );
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(store.config().windowRules[0].matchFloating == true);
+  CHECK(store.config().windowRules[0].matchPinned == false);
+  CHECK(store.config().windowRules[0].matchScratchpad == true);
+
+  file.write("[[window_rule]]\nmatch.is_floating = \"yes\"\nmatch.is_pinned = 1\nmatch.is_scratchpad = 0.5\n");
+  CHECK(store.reload().success);
+  CHECK(store.config().windowRules.empty());
+  CHECK(containsDiagnostic(store, "ignoring window_rule.match.is_floating (expected boolean)"));
+  CHECK(containsDiagnostic(store, "ignoring window_rule.match.is_pinned (expected boolean)"));
+  CHECK(containsDiagnostic(store, "ignoring window_rule.match.is_scratchpad (expected boolean)"));
+  CHECK(!containsDiagnostic(store, "unknown key window_rule.match.is_floating"));
+  CHECK(!containsDiagnostic(store, "unknown key window_rule.match.is_pinned"));
+  CHECK(!containsDiagnostic(store, "unknown key window_rule.match.is_scratchpad"));
 }
 
 UMBRIEL_TEST(windowXdgTagMatcherLoadsRegexAndRejectsInvalidValues) {
@@ -1642,6 +1746,99 @@ files = [")"
   CHECK(loaded.success);
   CHECK_EQ(store.config().colors.accentPrimary[0], 171.0F / 255.0F);
   CHECK_EQ(store.config().colors.background[0], 34.0F / 255.0F);
+}
+
+UMBRIEL_TEST(ruleCollectionsAccumulateAcrossIncludesWhilePlainArraysReplace) {
+  // Rules are a collection every file contributes to, so an include and the including file both apply, in merge
+  // order. Every other array is one value: appending would grow a fixed-arity array past what its reader accepts and
+  // would make an overridden autostart list run the include's commands as well.
+  const TempConfigTree tree;
+  tree.write(
+      "rules.toml",
+      "[general]\nautostart = [\"from-include\"]\n"
+      "[output.DP-1]\nposition = [0, 0]\n"
+      "[[window_rule]]\nmatch.app_id = \"^from-include$\"\n"
+      "[[layer_rule]]\nmatch.namespace = \"^bar$\"\nblur = true\n"
+  );
+  tree.write(
+      "config.toml",
+      "[include]\nfiles = [\"rules.toml\"]\n"
+      "[general]\nautostart = [\"from-root\"]\n"
+      "[output.DP-1]\nposition = [3072, 0]\n"
+      "[[window_rule]]\nmatch.app_id = \"^from-root$\"\n"
+  );
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(tree.path("config.toml"), true);
+  const umbriel::ConfigReloadResult loaded = store.reload();
+
+  std::vector<std::string> patterns;
+  for (const umbriel::WindowRule& rule : store.config().windowRules) {
+    patterns.push_back(rule.appIdPattern);
+  }
+  std::vector<std::string> namespaces;
+  for (const umbriel::LayerRule& rule : store.config().layerRules) {
+    namespaces.push_back(rule.namespacePattern);
+  }
+  const std::vector<std::string> expectedPatterns{"^from-include$", "^from-root$"};
+  const std::vector<std::string> expectedNamespaces{"^bar$"};
+  const std::vector<std::string> expectedAutostart{"from-root"};
+  const std::array<int, 2> expectedPosition{3072, 0};
+  const auto output =
+      std::ranges::find_if(store.config().outputs, [](const umbriel::OutputRule& rule) { return rule.name == "DP-1"; });
+  const bool foundOutput = output != store.config().outputs.end();
+
+  CHECK(loaded.success);
+  CHECK(patterns == expectedPatterns);
+  CHECK(namespaces == expectedNamespaces);
+  CHECK(store.config().general.autostart == expectedAutostart);
+  CHECK(foundOutput && output->position.has_value());
+  CHECK(foundOutput && output->position.value_or(std::array<int, 2>{}) == expectedPosition);
+  CHECK(!containsDiagnostic(store, "position"));
+}
+
+UMBRIEL_TEST(emptyRuleArrayDropsRulesFromIncludes) {
+  const TempConfig file;
+  file.write("window_rule = []\n[include]\nfiles = [\"" + file.includeName() + "\"]\n");
+  file.writeInclude("[[window_rule]]\nmatch.app_id = \"^dropped$\"\ndefault_floating = true\n");
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+  const umbriel::ConfigReloadResult loaded = store.reload();
+
+  CHECK(loaded.success);
+  CHECK(store.config().windowRules.empty());
+}
+
+UMBRIEL_TEST(duplicateDeviceRuleAcrossIncludesIsRejected) {
+  // Device rules accumulate like any other collection, so restating one in a later file is the same duplicate the
+  // reader already rejects within a single file, and the whole reload is refused rather than silently dropping the
+  // include's other rules.
+  const TempConfigTree tree;
+  tree.write("input.toml", "[[input.device]]\nname = \"Acme Keyboard\"\nrepeat_rate = 40\n");
+  tree.write(
+      "config.toml",
+      "[include]\nfiles = [\"input.toml\"]\n"
+      "[[input.device]]\nname = \"Acme Mouse\"\nsensitivity = -0.5\n"
+  );
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(tree.path("config.toml"), true);
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().input.devices.size(), size_t{2});
+  CHECK(store.config().input.findDevice("Acme Keyboard") != nullptr);
+  CHECK(store.config().input.findDevice("Acme Mouse") != nullptr);
+
+  tree.write(
+      "config.toml",
+      "[include]\nfiles = [\"input.toml\"]\n"
+      "[[input.device]]\nname = \"Acme Keyboard\"\nrepeat_rate = 60\n"
+  );
+  const umbriel::ConfigReloadResult duplicate = store.reload();
+
+  CHECK(!duplicate.success);
+  CHECK(containsDiagnostic(store, "duplicates device 'Acme Keyboard'"));
+  CHECK_EQ(store.config().input.devices.size(), size_t{2});
 }
 
 UMBRIEL_TEST(activationPolicyLoadsGloballyAndPerWindow) {
