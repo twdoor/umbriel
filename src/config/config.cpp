@@ -360,7 +360,7 @@ namespace umbriel {
       }
       const auto* value = node->as_string();
       if (value == nullptr) {
-        warnAt(node->source(), R"({}.position must be a string ("left" or "right"))", context);
+        warnAt(node->source(), R"({}.position must be a string ("left", "right", or "center"))", context);
         return std::nullopt;
       }
       const std::string_view position = value->get();
@@ -370,7 +370,10 @@ namespace umbriel {
       if (position == "right") {
         return MasterPosition::Right;
       }
-      warnAt(node->source(), R"(unknown {}.position "{}" (expected "left" or "right"))", context, position);
+      if (position == "center") {
+        return MasterPosition::Center;
+      }
+      warnAt(node->source(), R"(unknown {}.position "{}" (expected "left", "right", or "center"))", context, position);
       return std::nullopt;
     }
 
@@ -608,7 +611,8 @@ namespace umbriel {
                 overrides.master.position = position;
               }
               sm.real("default_width_fraction", 0.1, 0.9, overrides.master.defaultWidthFraction)
-                  .boolean("new_on_top", overrides.master.newOnTop);
+                  .boolean("new_on_top", overrides.master.newOnTop)
+                  .boolean("new_becomes_master", overrides.master.newBecomesMaster);
             });
           },
           layoutContext
@@ -1301,7 +1305,8 @@ namespace umbriel {
             loaded.layout.master.position = *position;
           }
           sm.real("default_width_fraction", 0.1, 0.9, loaded.layout.master.defaultWidthFraction)
-              .boolean("new_on_top", loaded.layout.master.newOnTop);
+              .boolean("new_on_top", loaded.layout.master.newOnTop)
+              .boolean("new_becomes_master", loaded.layout.master.newBecomesMaster);
         });
       });
     }

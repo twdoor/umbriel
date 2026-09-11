@@ -42,11 +42,11 @@ namespace umbriel {
       wlr_scene_buffer_set_opacity(buffer, opacity);
     }
 
-    bool looksTiled(const wlr_xdg_toplevel* toplevel) {
+    bool looksTiled(const wlr_xdg_toplevel* toplevel, bool parented) {
       const auto& state = toplevel->current;
       const bool fixedWidth = state.max_width > 0 && state.min_width == state.max_width;
       const bool fixedHeight = state.max_height > 0 && state.min_height == state.max_height;
-      return toplevel->parent == nullptr && !fixedWidth && !fixedHeight;
+      return !parented && !fixedWidth && !fixedHeight;
     }
 
     template <typename T>
@@ -75,6 +75,21 @@ namespace umbriel {
         return 0;
       }
       return 0;
+    }
+
+    View* tiledViewAtLayoutPoint(Workspace& workspace, double lx, double ly) {
+      for (const Column& column : workspace.layout().columns()) {
+        for (View* candidate : column.views) {
+          if (candidate == nullptr || !candidate->mapped() || !candidate->tiled()) {
+            continue;
+          }
+          const wlr_box target = workspace.presentedTiledBox(candidate);
+          if (target.width > 0 && target.height > 0 && wlr_box_contains_point(&target, lx, ly)) {
+            return candidate;
+          }
+        }
+      }
+      return nullptr;
     }
 
     bool sceneNodeShowsSurface(wlr_scene_node* node, wlr_surface* surface) {
@@ -1098,7 +1113,7 @@ namespace umbriel {
       m_aloneAction = AloneAction::MaximizeToEdges;
       return true;
     }
-    if (m_toplevel->parent == nullptr && delta.defaultMaximize && *delta.defaultMaximize) {
+    if (!openingParented() && delta.defaultMaximize && *delta.defaultMaximize) {
       if (m_toplevel->scheduled.maximized) {
         return false;
       }
@@ -1265,9 +1280,9 @@ namespace umbriel {
     self->handleDestroy();
   }
 
-  void View::onRequestMove(wl_listener* listener, void* /*data*/) {
+  void View::onRequestMove(wl_listener* listener, void* data) {
     View* self = wl_container_of(listener, self, m_requestMove);
-    self->handleRequestMove();
+    self->handleRequestMove(data);
   }
 
   void View::onRequestResize(wl_listener* listener, void* data) {
@@ -1413,6 +1428,41 @@ namespace umbriel {
     return true;
   }
 
+  wlr_box View::fullscreenArea() const {
+    Output* output = nullptr;
+    if (m_workspace != nullptr && m_workspace->group() != nullptr) {
+      output = m_workspace->group()->output();
+    }
+    if (output == nullptr) {
+      output = currentOutput();
+    }
+    wlr_output* wlrOutput = output != nullptr ? output->wlr() : m_server->preferredOutput();
+    wlr_box fullArea{};
+    wlr_output_layout_get_box(m_server->outputLayout(), wlrOutput, &fullArea);
+    return fullArea;
+  }
+
+  wlr_box View::targetBox() const {
+    // A window that mapped in this same dispatch has its arrange still pending, so its slot is missing or stale.
+    const bool inLayout = m_workspace != nullptr && m_workspace->layout().columnOf(this) >= 0;
+    if (inLayout) {
+      m_workspace->flushArrange();
+    }
+    if (m_toplevel->scheduled.fullscreen) {
+      // Fullscreen takes the output's size; the strip still places a tiled one at its column.
+      const wlr_box area = fullscreenArea();
+      return {layoutTargetX(), layoutTargetY(), area.width, area.height};
+    }
+    if (inLayout) {
+      return m_workspace->presentedTiledBox(this);
+    }
+    // A float's scheduled size is the one a maximize or resize is taking it to, and the client's own once it settled.
+    const wlr_box& geometry = m_toplevel->base->geometry;
+    const int width = m_toplevel->scheduled.width > 0 ? m_toplevel->scheduled.width : geometry.width;
+    const int height = m_toplevel->scheduled.height > 0 ? m_toplevel->scheduled.height : geometry.height;
+    return {layoutTargetX(), layoutTargetY(), width, height};
+  }
+
   void View::placeInUsableArea(const std::optional<WindowPosition>& position) {
     const wlr_box usable = floatingUsableArea();
     if (usable.width <= 0 || usable.height <= 0) {
@@ -1460,6 +1510,11 @@ namespace umbriel {
       }
       origin = clampFloatingOrigin(origin, {.x = 0, .y = 0, .width = width, .height = height}, usable);
       m_floating.rememberPositionFraction(origin, usable);
+    } else if (const View* parent = transientParent()) {
+      // Where the parent is headed, not where its node is mid-animation right after it mapped. A fullscreen parent
+      // shows over any panel, so the whole output counts as visible for it.
+      const wlr_box shownIn = parent->m_toplevel->scheduled.fullscreen ? parent->fullscreenArea() : usable;
+      origin = centeredOverShown(parent->targetBox(), shownIn, width, height);
     }
     setPosition(origin.x, origin.y);
   }
@@ -1717,7 +1772,7 @@ namespace umbriel {
       return;
     }
 
-    wlr_scene_node_copy_animations(&snap->node, &m_sceneTree->node);
+    wlr_scene_node_copy_animations_for_snapshot(&snap->node, &m_sceneTree->node);
     const auto shadow = m_decoration.snapshotShadow(output->viewRoot(), &snap->node);
     m_server->animateCloseSnapshot(output, snap, std::move(snapBorders), std::nullopt, shadow);
     wlr_output_schedule_frame(output->wlr());
@@ -2021,16 +2076,7 @@ namespace umbriel {
   }
 
   void View::applyFullscreenLayout(bool animate) {
-    Output* output = nullptr;
-    if (m_workspace != nullptr && m_workspace->group() != nullptr) {
-      output = m_workspace->group()->output();
-    }
-    if (output == nullptr) {
-      output = currentOutput();
-    }
-    wlr_output* wlrOutput = output != nullptr ? output->wlr() : m_server->preferredOutput();
-    wlr_box fullArea{};
-    wlr_output_layout_get_box(m_server->outputLayout(), wlrOutput, &fullArea);
+    const wlr_box fullArea = fullscreenArea();
     if (fullArea.width <= 0 || fullArea.height <= 0) {
       return;
     }
@@ -2110,7 +2156,7 @@ namespace umbriel {
       m_acceptClientMaximizeRequests = true;
     }
     m_server->scheduleIpcWindowsEvent();
-    m_tiled = looksTiled(m_toplevel);
+    m_tiled = looksTiled(m_toplevel, openingParented());
     const wlr_box& mapGeo = m_toplevel->base->geometry;
     m_presentation.setSize(mapGeo.width, mapGeo.height);
     resetSurfaceClip();
@@ -2209,7 +2255,7 @@ namespace umbriel {
     // Opening state is compositor-owned. Clients may restore a saved maximized
     // flag during this transition; only an explicit window rule overrides the
     // layout's initial size.
-    const bool ruleMaximized = m_toplevel->parent == nullptr && rule.defaultMaximize && *rule.defaultMaximize;
+    const bool ruleMaximized = !openingParented() && rule.defaultMaximize && *rule.defaultMaximize;
     const bool restoredMaximized = config().general.honorRestoredMaximize && m_toplevel->requested.maximized;
     if (!assignedScratchpad && (ruleMaximized || restoredMaximized)) {
       setMaximized(true);
@@ -2297,6 +2343,30 @@ namespace umbriel {
   }
 
   void View::handleUnmap() {
+    Workspace* closingWorkspace = m_workspace;
+    Cursor* cursor = m_server->cursor();
+    wlr_seat* seat = m_server->seat()->wlr();
+    const Overview* overview = m_server->overview();
+    const bool focusRevealedTile = closingWorkspace != nullptr
+        && closingWorkspace->focusedView() == this
+        && closingWorkspace->active()
+        && closingWorkspace->scrollingLayout() == nullptr
+        && m_tiled
+        && m_toplevel->parent == nullptr
+        && config().input.focus.followsMouse
+        && !m_server->sessionLocked()
+        && m_server->exclusiveKeyboardLayer() == nullptr
+        && (overview == nullptr || !overview->active())
+        && cursor != nullptr
+        && cursor->isPassthrough()
+        && seat->drag == nullptr
+        && seat->pointer_state.button_count == 0
+        && View::fromSurface(seat->keyboard_state.focused_surface) == this
+        && View::fromSurface(seat->pointer_state.focused_surface) == this
+        && wlr_box_contains_point(&m_presentedBox, cursor->wlr()->x, cursor->wlr()->y);
+    const double closePointerX = cursor != nullptr ? cursor->wlr()->x : 0.0;
+    const double closePointerY = cursor != nullptr ? cursor->wlr()->y : 0.0;
+
     setUrgent(false);
     m_floatingMaximized = false;
     m_maximizedToEdges = false;
@@ -2316,8 +2386,8 @@ namespace umbriel {
     if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
       overview->onViewUnmapped(this);
     }
-    // Choose the layout neighbor while this view still belongs to the layout. Waiting for destroy loses that position,
-    // and focus-follows-mouse used to replace it with whichever survivor happened to sit under the stationary pointer.
+    // Choose the layout neighbor while this view still belongs to the layout. Waiting for destroy loses that position.
+    // It remains the fallback when the pointer did not belong to the closing tile or no survivor takes its place.
     if (m_workspace != nullptr && m_workspace->focusedView() == this) {
       View* replacement = m_workspace->focusReplacementForRemoval(this);
       if (replacement != nullptr) {
@@ -2344,6 +2414,7 @@ namespace umbriel {
       wlr_scene_node_reparent(&m_sceneTree->node, m_workspace ? m_workspace->viewLayer(m_tiled) : m_server->xdgTree());
     }
     m_mapped = false;
+    m_openingParentRequested = false;
     m_acceptClientMaximizeRequests = false;
     if (m_acceptClientMaximizeIdle != nullptr) {
       wl_event_source_remove(m_acceptClientMaximizeIdle);
@@ -2359,6 +2430,15 @@ namespace umbriel {
     m_positioned = false;
     if (m_workspace != nullptr) {
       m_workspace->layoutDetach(this, m_workspace->scrollingLayout() != nullptr);
+      if (focusRevealedTile) {
+        // The scene may still be animating from its old geometry. Arrange now, then read the authoritative layout
+        // targets once so compositor motion cannot produce a chain of hover focus changes.
+        m_workspace->flushArrange();
+        View* replacement = tiledViewAtLayoutPoint(*m_workspace, closePointerX, closePointerY);
+        if (replacement != nullptr && m_workspace->focusedView() != replacement) {
+          m_server->focusView(replacement, FocusReason::PointerHover);
+        }
+      }
     }
     leaveForeignOutput();
     setForeignActivated(false);
@@ -2460,7 +2540,7 @@ namespace umbriel {
       // Resolve window rules early to influence initial tiled/float decision and size.
       WindowRuleState openingState = ruleState();
       openingState.focused = false;
-      openingState.floating = !looksTiled(m_toplevel);
+      openingState.floating = !looksTiled(m_toplevel, openingParented());
       openingState.alone = false;
       const ResolvedWindowRule rule = resolveWindowRules(
           config(), ruleText(m_toplevel->app_id), ruleText(m_toplevel->title), m_xdgTag, m_contentType, openingState,
@@ -2471,8 +2551,8 @@ namespace umbriel {
           && scratchpadManager != nullptr
           && scratchpadManager->hasScratchpad(*rule.defaultScratchpad);
       const auto& scratchpadConfig = config().animation.scratchpad;
-      const bool wantTiled =
-          !openingInScratchpad && (rule.defaultFloating ? !*rule.defaultFloating : looksTiled(m_toplevel));
+      const bool wantTiled = !openingInScratchpad
+          && (rule.defaultFloating ? !*rule.defaultFloating : looksTiled(m_toplevel, openingParented()));
       const bool wantFullscreen = openingInScratchpad
           ? scratchpadConfig.fullscreen
           : m_toplevel->requested.fullscreen || (rule.defaultFullscreen && *rule.defaultFullscreen);
@@ -2481,7 +2561,7 @@ namespace umbriel {
           : rule.defaultMaximizeToEdges && *rule.defaultMaximizeToEdges;
       const bool wantMaximized = openingInScratchpad
           ? wantMaximizeToEdges
-          : (m_toplevel->parent == nullptr && rule.defaultMaximize && *rule.defaultMaximize)
+          : (!openingParented() && rule.defaultMaximize && *rule.defaultMaximize)
               || wantMaximizeToEdges
               || (config().general.honorRestoredMaximize && m_toplevel->requested.maximized);
 
@@ -2702,11 +2782,14 @@ namespace umbriel {
     m_server->removeView(this);
   }
 
-  void View::handleRequestMove() { m_server->cursor()->beginMove(this); }
+  void View::handleRequestMove(void* data) {
+    auto* event = static_cast<wlr_xdg_toplevel_move_event*>(data);
+    m_server->cursor()->beginClientMove(this, event->seat, event->serial);
+  }
 
   void View::handleRequestResize(void* data) {
     auto* event = static_cast<wlr_xdg_toplevel_resize_event*>(data);
-    m_server->cursor()->beginResize(this, event->edges);
+    m_server->cursor()->beginClientResize(this, event->seat, event->serial, event->edges);
   }
 
   void View::setMaximized(bool maximized, bool animate) {
@@ -2932,6 +3015,14 @@ namespace umbriel {
       raiseToTop();
     }
   }
+
+  void View::recordOpeningParentRequest(bool parentRequested) {
+    // Once mapped, wlroots' normal parent state is authoritative. Retire the
+    // opening hint on any later request, especially an explicit null parent.
+    m_openingParentRequested = !m_mapped && parentRequested;
+  }
+
+  bool View::openingParented() const { return m_toplevel->parent != nullptr || m_openingParentRequested; }
 
   void View::toggleFullscreen() {
     if (!m_toplevel->base->initialized) {
@@ -3480,7 +3571,7 @@ namespace umbriel {
     }
 
     if (!inScratchpad
-        && m_toplevel->parent == nullptr
+        && !openingParented()
         && changedInitialRule(rule.defaultMaximize, initiallyApplied.defaultMaximize)
         && *rule.defaultMaximize
         && !m_toplevel->scheduled.maximized) {

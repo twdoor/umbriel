@@ -259,7 +259,7 @@ hide_when_typing = false                        # Keep visible while typing
 hide_timeout_ms = 0                             # Idle hide timeout, 0 disables; maximum is 3600000
 
 [input.focus]
-follows_mouse = false                           # Focus the pointer target after pointer motion
+follows_mouse = false                           # Focus on pointer motion and Dwindle/master tiles revealed on close
 # Refuse hover focus when revealing a window would scroll farther than this
 # many viewport widths. Omit the key for no limit.
 # follows_mouse_max_scroll = 0.5
@@ -490,9 +490,10 @@ center_focused = "never"                        # never, always, or on_overflow
 # preserve_split = false                        # Keep every split direction fixed after creation
 
 [layout.master]
-position = "left"                               # left or right master area
+position = "left"                               # left, right, or center master area
 default_width_fraction = 0.55                   # Initial master area fraction, 0.1-0.9
 new_on_top = true                               # Put new windows at the top of the stack
+new_becomes_master = false                      # New windows take the master slot
 
 # ───────────────────────────── Window Rules ─────────────────────────────────
 # Match windows by application ID, title, XDG tag, content type, or focus state.
@@ -568,8 +569,6 @@ default_pinned = true
 # default_width = 0.6
 # default_height = 0.5
 # default_position = { x = 0, y = 8, anchor = "top" }
-
-# Open an application maximized while keeping its parented dialogs natural-sized.
 
 # [[window_rule]]
 # match.app_id = "^example-app$"
@@ -678,6 +677,8 @@ blur_optimized = false
 # Every event accepts shader = "path/to/effect.glsl". Inline GLSL is not supported.
 # File paths are relative to this config, including configs loaded via include.
 # Bundled reveal.glsl and squash.glsl can be referenced by their installed absolute paths.
+# Shaders can use umbriel_sample_previous(uv) for target-local feedback.
+# umbriel_random_seed is a stable vec4 that changes for each transition.
 # Copy examples/shaders beside your config only if you want editable local versions.
 # ────────────────────────────────────────────────────────────────────────────
 
